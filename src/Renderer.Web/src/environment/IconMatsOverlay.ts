@@ -15,24 +15,20 @@ const PATCH_CANVAS_SIZE = PATCH_CSS_SIZE / CANVAS_STEP;
 /**
  * Iconscape-inspired coalesced organic floor mats underneath desktop icons.
  *
- * Performance Architecture:
- * - All heavy 2D SDF evaluations and pixel-level material shading run on a background
- *   Web Worker thread (`iconMats.worker.ts`) via zero-copy transferable ArrayBuffers.
- * - During active icon/folder dragging (`fast: true`), the main thread performs ZERO
- *   full-screen SDF recomputations or ImageData uploads; instead, it translates a
- *   GPU-cached `dragMatSprite` at 60+ FPS (<0.01ms CPU cost).
- * - On drop (`fast: false`), the newly settled SDF mat rendered by the worker smoothly
- *   fades and blooms in via GPU sprite alpha/scale interpolation (`update(dt)`).
+ * Performance & Animation Architecture:
+ * - Stationary icons remain on `currentSprite` at 100% steady opacity and NEVER
+ *   blink, refresh, or fade when another icon is dragged or dropped.
+ * - While an icon is actively dragged (`fast: true`), the background Web Worker
+ *   renders the remaining stationary icons once onto `currentSprite`, while the
+ *   single dragged icon's mat (`dragMatSprite`) translates purely on the GPU at 60+ FPS.
+ * - The moment the dragged icon is dropped (`fast: false`), ONLY that dropped icon's
+ *   mat (`dropBloomSprite`) fades in (`alpha: 0 -> 1`, `scale: 0.76 -> 1.0`) over 360ms
+ *   at the dropped spot, and then seamlessly hands off to the Worker's merged SDF buffer.
  */
 export class IconMatsOverlay extends Container {
-  private readonly prevSprite: Sprite;
   private readonly currentSprite: Sprite;
   private readonly dragMatSprite: Sprite;
   private readonly dropBloomSprite: Sprite;
-
-  private prevTexture: Texture | null = null;
-  private prevCanvas: HTMLCanvasElement | null = null;
-  private prevCtx: CanvasRenderingContext2D | null = null;
 
   private currentTexture: Texture | null = null;
   private currentCanvas: HTMLCanvasElement | null = null;
@@ -45,7 +41,19 @@ export class IconMatsOverlay extends Container {
   private nextJobId = 1;
   private latestAppliedJobId = 0;
   private workerBusy = false;
-  private pendingWorkerReq: Omit<IconMatsWorkerRequest, 'jobId'> | null = null;
+  private pendingWorkerReq: {
+    req: Omit<IconMatsWorkerRequest, 'jobId'>;
+    deferUntilDropBloomDone: boolean;
+  } | null = null;
+  private activeJobDefersUntilBloom = false;
+
+  // Staged worker result waiting for the single dropped icon's fade-in bloom to finish
+  private stagedPixels: {
+    cw: number;
+    ch: number;
+    pixels: Uint8ClampedArray;
+    hasIcons: boolean;
+  } | null = null;
 
   private cw = 0;
   private ch = 0;
@@ -58,8 +66,7 @@ export class IconMatsOverlay extends Container {
   private wasDragging = false;
   private lastDraggedCenter: { x: number; y: number; width: number; height: number } | null = null;
 
-  // GPU-only cross-fade & drop bloom animation state (0 CPU pixel loops per frame)
-  private crossfadeProgress = 1;
+  // Per-icon GPU drop fade-in progress (1 = idle, 0..1 = single dropped icon fading in)
   private dropBloomProgress = 1;
 
   private theme: SceneTheme;
@@ -74,9 +81,6 @@ export class IconMatsOverlay extends Container {
     this.viewWidth = Math.max(1, Math.round(width));
     this.viewHeight = Math.max(1, Math.round(height));
 
-    this.prevSprite = new Sprite(Texture.EMPTY);
-    this.prevSprite.visible = false;
-
     this.currentSprite = new Sprite(Texture.EMPTY);
     this.currentSprite.visible = false;
 
@@ -88,7 +92,7 @@ export class IconMatsOverlay extends Container {
     this.dragMatSprite.anchor.set(0.5, 0.5);
     this.dragMatSprite.visible = false;
 
-    this.addChild(this.prevSprite, this.currentSprite, this.dropBloomSprite, this.dragMatSprite);
+    this.addChild(this.currentSprite, this.dropBloomSprite, this.dragMatSprite);
 
     this.initSurfaces(this.viewWidth, this.viewHeight);
     this.rebuildPatchTexture();
@@ -122,6 +126,26 @@ export class IconMatsOverlay extends Container {
     return clean.length > 0 ? `lbl:${clean}` : `id:${icon.id}`;
   }
 
+  private static areIconListsEquivalent(a: readonly AabbRect[], b: readonly AabbRect[]): boolean {
+    if (a.length !== b.length) {
+      return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+      const ia = a[i];
+      const ib = b[i];
+      if (
+        IconMatsOverlay.iconKey(ia) !== IconMatsOverlay.iconKey(ib) ||
+        Math.abs(ia.x - ib.x) > 1 ||
+        Math.abs(ia.y - ib.y) > 1 ||
+        Math.abs(ia.width - ib.width) > 1 ||
+        Math.abs(ia.height - ib.height) > 1
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   setIcons(icons: readonly AabbRect[], options?: { fast?: boolean }): void {
     const fast = options?.fast === true;
     const incoming = icons.map((icon) => ({ ...icon }));
@@ -131,15 +155,15 @@ export class IconMatsOverlay extends Container {
       this.settledIcons = [];
       this.activeDraggedKey = null;
       this.wasDragging = false;
+      this.stagedPixels = null;
       this.dragMatSprite.visible = false;
       this.dropBloomSprite.visible = false;
-      this.prevSprite.visible = false;
       this.currentSprite.visible = false;
       return;
     }
 
     if (fast) {
-      // Detect which single icon is currently being dragged by comparing against settledIcons
+      // Identify the single icon being dragged
       let draggedIcon: AabbRect | null = null;
       let maxMoveDist = 1.5;
 
@@ -172,7 +196,6 @@ export class IconMatsOverlay extends Container {
         this.wasDragging = true;
         this.activeDraggedKey = draggedKey;
 
-        // Move the dragged icon's mat purely on the GPU (0ms CPU SDF cost!)
         const cx = draggedIcon.x + draggedIcon.width * 0.5;
         const cy = draggedIcon.y + draggedIcon.height * 0.5;
         this.lastDraggedCenter = {
@@ -182,12 +205,15 @@ export class IconMatsOverlay extends Container {
           height: draggedIcon.height,
         };
 
+        // Pure GPU translation for the dragged icon mat (<0.01ms CPU cost, 0 lag!)
         this.dragMatSprite.position.set(cx, cy);
         this.dragMatSprite.visible = true;
         this.dropBloomSprite.visible = false;
+        this.dropBloomProgress = 1;
+        this.stagedPixels = null;
         this.applyLightingTint();
 
-        // Only on the FIRST frame of drag, ask the background worker to render the stationary icons once
+        // Only on frame 1 of drag: update the stationary background mat (excluding the dragged icon)
         if (firstDragFrame) {
           const stationaryIcons = incoming.filter(
             (i) => IconMatsOverlay.iconKey(i) !== draggedKey,
@@ -200,79 +226,97 @@ export class IconMatsOverlay extends Container {
       }
     }
 
-    // Drop or settled icon update!
-    let droppedSpot: { x: number; y: number } | null = null;
-    if (this.wasDragging && this.lastDraggedCenter) {
-      // Find final settled position of the icon that was being dragged
-      const settledMatch = this.activeDraggedKey
-        ? incoming.find((i) => IconMatsOverlay.iconKey(i) === this.activeDraggedKey)
-        : null;
-      if (settledMatch) {
-        droppedSpot = {
-          x: settledMatch.x + settledMatch.width * 0.5,
-          y: settledMatch.y + settledMatch.height * 0.5,
+    // If we aren't finishing a drag and the icon coordinates haven't changed, do nothing!
+    if (!this.wasDragging && IconMatsOverlay.areIconListsEquivalent(incoming, this.settledIcons)) {
+      return;
+    }
+
+    // Detect which single icon was just dropped or relocated
+    let droppedIcon: AabbRect | null = null;
+    if (this.wasDragging) {
+      if (this.activeDraggedKey) {
+        droppedIcon =
+          incoming.find((i) => IconMatsOverlay.iconKey(i) === this.activeDraggedKey) ?? null;
+      }
+      if (!droppedIcon && this.lastDraggedCenter) {
+        droppedIcon = {
+          id: -1,
+          label: 'dropped',
+          x: this.lastDraggedCenter.x - this.lastDraggedCenter.width * 0.5,
+          y: this.lastDraggedCenter.y - this.lastDraggedCenter.height * 0.5,
+          width: this.lastDraggedCenter.width,
+          height: this.lastDraggedCenter.height,
         };
-      } else {
-        droppedSpot = { x: this.lastDraggedCenter.x, y: this.lastDraggedCenter.y };
       }
     } else if (this.settledIcons.length > 0) {
-      // Also detect if an icon moved significantly (e.g. native Windows desktop icon drop)
       const prevByKey = new Map<string, AabbRect>();
       for (const s of this.settledIcons) {
         prevByKey.set(IconMatsOverlay.iconKey(s), s);
       }
       for (const inc of incoming) {
         const prev = prevByKey.get(IconMatsOverlay.iconKey(inc));
-        if (!prev || Math.hypot(inc.x - prev.x, inc.y - prev.y) > 12) {
-          droppedSpot = {
-            x: inc.x + inc.width * 0.5,
-            y: inc.y + inc.height * 0.5,
-          };
+        if (!prev || Math.hypot(inc.x - prev.x, inc.y - prev.y) > 10) {
+          droppedIcon = inc;
           break;
         }
       }
     }
 
+    const hadStationaryPreRendered = this.wasDragging;
     this.wasDragging = false;
     this.activeDraggedKey = null;
     this.lastDraggedCenter = null;
     this.dragMatSprite.visible = false;
 
-    if (droppedSpot) {
-      // Trigger GPU drop fade-in & organic scale bloom right at the dropped icon location!
-      this.dropBloomSprite.position.set(droppedSpot.x, droppedSpot.y);
-      this.dropBloomProgress = 0.02;
-      this.dropBloomSprite.visible = true;
-    }
-
     this.icons = incoming;
     this.settledIcons = incoming.map((icon) => ({ ...icon }));
-    this.dispatchRasterJob(incoming, true);
+
+    if (droppedIcon) {
+      const dropKey = IconMatsOverlay.iconKey(droppedIcon);
+      const dropCx = droppedIcon.x + droppedIcon.width * 0.5;
+      const dropCy = droppedIcon.y + droppedIcon.height * 0.5;
+
+      // Ensure stationary icons (without the dropped icon) remain solid at 100% opacity on currentSprite
+      // while ONLY the dropped icon's mat (`dropBloomSprite`) fades & blooms in!
+      if (!hadStationaryPreRendered) {
+        const stationaryIcons = incoming.filter((i) => IconMatsOverlay.iconKey(i) !== dropKey);
+        this.dispatchRasterJob(stationaryIcons, false);
+      }
+
+      this.dropBloomSprite.position.set(dropCx, dropCy);
+      this.dropBloomProgress = 0.01;
+      this.dropBloomSprite.visible = true;
+
+      // Compute the final merged SDF (including the dropped icon) in the background worker,
+      // and hold committing it to currentSprite until dropBloomSprite finishes fading in to 100%!
+      this.dispatchRasterJob(incoming, true);
+    } else {
+      // Initial load or bulk tidy: render directly without per-icon drop bloom
+      this.dropBloomSprite.visible = false;
+      this.dropBloomProgress = 1;
+      this.dispatchRasterJob(incoming, false);
+    }
+
     this.applyLightingTint();
   }
 
   update(dt: number): void {
+    if (this.dropBloomProgress >= 1) {
+      return;
+    }
+
     const safeDt = Math.min(0.05, Math.max(0.001, dt));
-    let dirty = false;
+    // 360ms smooth fade-in exclusively on the dropped icon's mat (`dropBloomSprite`)
+    this.dropBloomProgress = Math.min(1, this.dropBloomProgress + safeDt * 2.8);
+    this.applyLightingTint();
 
-    if (this.crossfadeProgress < 1) {
-      this.crossfadeProgress = Math.min(1, this.crossfadeProgress + safeDt * 2.8);
-      if (this.crossfadeProgress >= 1) {
-        this.prevSprite.visible = false;
+    if (this.dropBloomProgress >= 1) {
+      if (this.stagedPixels) {
+        const staged = this.stagedPixels;
+        this.stagedPixels = null;
+        this.commitPixelsToCurrentCanvas(staged.cw, staged.ch, staged.pixels, staged.hasIcons);
       }
-      dirty = true;
-    }
-
-    if (this.dropBloomProgress < 1) {
-      this.dropBloomProgress = Math.min(1, this.dropBloomProgress + safeDt * 2.6);
-      if (this.dropBloomProgress >= 1) {
-        this.dropBloomSprite.visible = false;
-      }
-      dirty = true;
-    }
-
-    if (dirty) {
-      this.applyLightingTint();
+      this.dropBloomSprite.visible = false;
     }
   }
 
@@ -283,7 +327,7 @@ export class IconMatsOverlay extends Container {
     this.theme = theme;
     this.rebuildPatchTexture();
     if (this.icons.length > 0) {
-      this.dispatchRasterJob(this.icons, true);
+      this.dispatchRasterJob(this.icons, false);
     }
     this.applyLightingTint();
   }
@@ -305,7 +349,6 @@ export class IconMatsOverlay extends Container {
       this.dispatchRasterJob(this.icons, false);
     } else {
       this.currentSprite.visible = false;
-      this.prevSprite.visible = false;
     }
   }
 
@@ -320,74 +363,47 @@ export class IconMatsOverlay extends Container {
     const baseTint = isNight ? matCfg.nightTint : 0xffffff;
     const baseAlpha = isNight ? matCfg.nightAlpha : 1;
 
-    // Ease-out cubic cross-fade on the GPU
-    const t = Math.max(0, Math.min(1, this.crossfadeProgress));
-    const easedIn = 1 - Math.pow(1 - t, 3);
-    const easedOut = Math.max(0, 1 - easedIn * 1.15);
-
+    // Stationary icons on currentSprite ALWAYS remain at 100% steady opacity (zero refresh/flicker!)
     this.currentSprite.tint = baseTint;
-    this.currentSprite.alpha = baseAlpha * easedIn;
+    this.currentSprite.alpha = baseAlpha;
 
-    this.prevSprite.tint = baseTint;
-    this.prevSprite.alpha = baseAlpha * easedOut;
-
+    // Active dragged icon mat follows cursor at 94% opacity
     this.dragMatSprite.tint = baseTint;
-    this.dragMatSprite.alpha = baseAlpha * 0.92;
-    this.dragMatSprite.scale.set(1.04, 1.04);
+    this.dragMatSprite.alpha = baseAlpha * 0.94;
+    this.dragMatSprite.scale.set(1.03, 1.03);
 
+    // ONLY the newly dropped icon mat (`dropBloomSprite`) animates alpha 0 -> 1 and scale 0.76 -> 1.0!
     if (this.dropBloomSprite.visible) {
       const bt = Math.max(0, Math.min(1, this.dropBloomProgress));
-      const bloomEased = 1 - Math.pow(1 - bt, 3);
-      // Scale blooms from 0.65 -> 1.02 while fading in and then handing off to settled currentSprite
-      const scale = 0.65 + 0.37 * bloomEased;
-      const fadeEnvelope = bt < 0.55 ? bloomEased : Math.max(0, 1 - (bt - 0.55) / 0.45);
+      const eased = 1 - Math.pow(1 - bt, 3);
+      const scale = 0.76 + 0.24 * eased;
       this.dropBloomSprite.tint = baseTint;
       this.dropBloomSprite.scale.set(scale, scale);
-      this.dropBloomSprite.alpha = baseAlpha * fadeEnvelope;
+      this.dropBloomSprite.alpha = baseAlpha * eased;
     }
   }
 
   private initSurfaces(w: number, h: number): void {
     const oldCurr = this.currentTexture;
-    const oldPrev = this.prevTexture;
 
     this.cw = Math.max(1, Math.ceil(w / CANVAS_STEP));
     this.ch = Math.max(1, Math.ceil(h / CANVAS_STEP));
 
-    const createPair = (): {
-      canvas: HTMLCanvasElement;
-      ctx: CanvasRenderingContext2D | null;
-      texture: Texture;
-    } => {
-      const canvas = document.createElement('canvas');
-      canvas.width = this.cw;
-      canvas.height = this.ch;
-      const ctx = canvas.getContext('2d');
-      const texture = Texture.from(canvas, true);
-      return { canvas, ctx, texture };
-    };
+    const canvas = document.createElement('canvas');
+    canvas.width = this.cw;
+    canvas.height = this.ch;
+    const ctx = canvas.getContext('2d');
+    const texture = Texture.from(canvas, true);
 
-    const curr = createPair();
-    this.currentCanvas = curr.canvas;
-    this.currentCtx = curr.ctx;
-    this.currentTexture = curr.texture;
-    this.currentSprite.texture = curr.texture;
+    this.currentCanvas = canvas;
+    this.currentCtx = ctx;
+    this.currentTexture = texture;
+    this.currentSprite.texture = texture;
     this.currentSprite.width = this.cw * CANVAS_STEP;
     this.currentSprite.height = this.ch * CANVAS_STEP;
 
-    const prev = createPair();
-    this.prevCanvas = prev.canvas;
-    this.prevCtx = prev.ctx;
-    this.prevTexture = prev.texture;
-    this.prevSprite.texture = prev.texture;
-    this.prevSprite.width = this.cw * CANVAS_STEP;
-    this.prevSprite.height = this.ch * CANVAS_STEP;
-
     if (oldCurr && oldCurr !== Texture.EMPTY) {
       oldCurr.destroy(true);
-    }
-    if (oldPrev && oldPrev !== Texture.EMPTY) {
-      oldPrev.destroy(true);
     }
   }
 
@@ -438,7 +454,10 @@ export class IconMatsOverlay extends Container {
     }
   }
 
-  private dispatchRasterJob(targetIcons: readonly AabbRect[], animateFadeIn: boolean): void {
+  private dispatchRasterJob(
+    targetIcons: readonly AabbRect[],
+    deferUntilDropBloomDone: boolean,
+  ): void {
     const req: Omit<IconMatsWorkerRequest, 'jobId'> = {
       icons: targetIcons.map((i) => ({ ...i })),
       viewWidth: this.viewWidth,
@@ -449,7 +468,6 @@ export class IconMatsOverlay extends Container {
     };
 
     if (!this.worker) {
-      // Fallback synchronous execution if Web Workers are unavailable
       const jobId = this.nextJobId++;
       const { pixels, hasIcons } = rasterizeCrispIconMatsBuffer(
         req.icons,
@@ -459,23 +477,34 @@ export class IconMatsOverlay extends Container {
         req.ch,
         req.theme,
       );
-      this.applyRasterPixels(jobId, req.cw, req.ch, pixels, hasIcons, animateFadeIn);
+      this.handleCompletedPixels(
+        jobId,
+        req.cw,
+        req.ch,
+        pixels,
+        hasIcons,
+        deferUntilDropBloomDone,
+      );
       return;
     }
 
     if (this.workerBusy) {
-      this.pendingWorkerReq = req;
+      this.pendingWorkerReq = { req, deferUntilDropBloomDone };
       return;
     }
 
-    this.sendToWorker(req);
+    this.sendToWorker(req, deferUntilDropBloomDone);
   }
 
-  private sendToWorker(req: Omit<IconMatsWorkerRequest, 'jobId'>): void {
+  private sendToWorker(
+    req: Omit<IconMatsWorkerRequest, 'jobId'>,
+    deferUntilDropBloomDone: boolean,
+  ): void {
     if (!this.worker) {
       return;
     }
     this.workerBusy = true;
+    this.activeJobDefersUntilBloom = deferUntilDropBloomDone;
     const jobId = this.nextJobId++;
     const fullReq: IconMatsWorkerRequest = {
       ...req,
@@ -485,12 +514,13 @@ export class IconMatsOverlay extends Container {
   }
 
   private onWorkerCompleted(res: IconMatsWorkerResponse): void {
+    const deferUntilBloom = this.activeJobDefersUntilBloom;
     this.workerBusy = false;
 
     if (this.pendingWorkerReq) {
       const next = this.pendingWorkerReq;
       this.pendingWorkerReq = null;
-      this.sendToWorker(next);
+      this.sendToWorker(next.req, next.deferUntilDropBloomDone);
     }
 
     if (res.jobId < this.latestAppliedJobId || res.cw !== this.cw || res.ch !== this.ch) {
@@ -498,39 +528,51 @@ export class IconMatsOverlay extends Container {
     }
 
     const pixels = new Uint8ClampedArray(res.pixelsBuffer);
-    this.applyRasterPixels(res.jobId, res.cw, res.ch, pixels, res.hasIcons, true);
+    this.handleCompletedPixels(
+      res.jobId,
+      res.cw,
+      res.ch,
+      pixels,
+      res.hasIcons,
+      deferUntilBloom,
+    );
   }
 
-  private applyRasterPixels(
+  private handleCompletedPixels(
     jobId: number,
     cw: number,
     ch: number,
     pixels: Uint8ClampedArray,
     hasIcons: boolean,
-    animateFadeIn: boolean,
+    deferUntilDropBloomDone: boolean,
   ): void {
     this.latestAppliedJobId = jobId;
 
+    // If the single dropped icon is currently fading in on dropBloomSprite, hold the
+    // merged full-canvas commit until dropBloomProgress reaches 1.0 so ONLY the dropped
+    // icon fades in and stationary icons never change!
+    if (deferUntilDropBloomDone && this.dropBloomProgress < 1) {
+      this.stagedPixels = { cw, ch, pixels, hasIcons };
+      return;
+    }
+
+    this.stagedPixels = null;
+    this.commitPixelsToCurrentCanvas(cw, ch, pixels, hasIcons);
+  }
+
+  private commitPixelsToCurrentCanvas(
+    cw: number,
+    ch: number,
+    pixels: Uint8ClampedArray,
+    hasIcons: boolean,
+  ): void {
     if (!this.currentCtx || !this.currentCanvas || !this.currentTexture) {
       return;
     }
 
     if (!hasIcons) {
       this.currentSprite.visible = false;
-      this.prevSprite.visible = false;
       return;
-    }
-
-    // Copy previous settled canvas onto prevCanvas so we can smoothly GPU cross-fade
-    if (animateFadeIn && this.currentSprite.visible && this.prevCtx && this.prevTexture) {
-      this.prevCtx.clearRect(0, 0, cw, ch);
-      this.prevCtx.drawImage(this.currentCanvas, 0, 0);
-      this.prevTexture.source.update();
-      this.prevSprite.visible = true;
-      this.crossfadeProgress = 0.04;
-    } else {
-      this.prevSprite.visible = false;
-      this.crossfadeProgress = 1;
     }
 
     const imgData = this.currentCtx.createImageData(cw, ch);
@@ -538,7 +580,6 @@ export class IconMatsOverlay extends Container {
     this.currentCtx.putImageData(imgData, 0, 0);
     this.currentTexture.source.update();
     this.currentSprite.visible = true;
-
     this.applyLightingTint();
   }
 
@@ -551,19 +592,14 @@ export class IconMatsOverlay extends Container {
       this.currentTexture.destroy(true);
       this.currentTexture = null;
     }
-    if (this.prevTexture && this.prevTexture !== Texture.EMPTY) {
-      this.prevTexture.destroy(true);
-      this.prevTexture = null;
-    }
     if (this.patchTexture && this.patchTexture !== Texture.EMPTY) {
       this.patchTexture.destroy(true);
       this.patchTexture = null;
     }
     this.currentCanvas = null;
     this.currentCtx = null;
-    this.prevCanvas = null;
-    this.prevCtx = null;
     this.patchCanvas = null;
+    this.stagedPixels = null;
     super.destroy({ children: true });
   }
 }

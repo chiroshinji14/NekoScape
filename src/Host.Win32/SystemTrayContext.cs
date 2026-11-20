@@ -185,7 +185,7 @@ public sealed class SystemTrayContext : ApplicationContext
 
         _ipc.IconRescanRequested += _req =>
         {
-            RescanIcons(forceSend: true, sendSpawnAction: false);
+            RescanIcons(forceSend: false, sendSpawnAction: false);
             _ = SchedulePostDropIconRescansAsync();
         };
 
@@ -457,7 +457,7 @@ public sealed class SystemTrayContext : ApplicationContext
             await Task.Delay(90);
             if (!_disposed)
             {
-                InvokeOnUi(() => RescanIcons(forceSend: true, sendSpawnAction: false));
+                InvokeOnUi(() => RescanIcons(forceSend: false, sendSpawnAction: false));
             }
 
             await Task.Delay(150);
