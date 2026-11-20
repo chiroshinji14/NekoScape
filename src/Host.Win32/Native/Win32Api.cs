@@ -563,4 +563,11 @@ public static class Win32Api
         int length = GetClassName(hWnd, buffer, buffer.Length);
         return length > 0 ? new string(buffer, 0, length) : string.Empty;
     }
+
+    public static string ReadWindowTitle(IntPtr hWnd)
+    {
+        char[] buffer = new char[256];
+        int length = GetWindowText(hWnd, buffer, buffer.Length);
+        return length > 0 ? new string(buffer, 0, length) : string.Empty;
+    }
 }

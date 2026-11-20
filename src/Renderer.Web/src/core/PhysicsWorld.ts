@@ -66,6 +66,14 @@ export class PhysicsWorld {
     return { width: this.width, height: this.height };
   }
 
+  clampPointToBounds(x: number, y: number, margin = 24): { x: number; y: number } {
+    const m = Math.max(0, margin);
+    return {
+      x: Math.max(m, Math.min(this.width - m, x)),
+      y: Math.max(m, Math.min(this.height - m, y)),
+    };
+  }
+
   isCircleOverlappingAabb(x: number, y: number, radius: number, aabb: AabbRect): boolean {
     const closestX = Math.max(aabb.x, Math.min(x, aabb.x + aabb.width));
     const closestY = Math.max(aabb.y, Math.min(y, aabb.y + aabb.height));

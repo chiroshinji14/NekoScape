@@ -11,9 +11,21 @@ const PLANK_HEIGHT = 52;
 const MIN_PLANK_LEN = 240;
 const MAX_PLANK_LEN = 420;
 
+interface PlankStyleOptions {
+  seed: number;
+  plankHeight: number;
+  highlightRgba: string;
+  grainDarkRgba: string;
+  knotChance: number;
+  isCoolSlate?: boolean;
+  isFrosted?: boolean;
+  isStudioPaint?: boolean;
+  isAquariumCaustics?: boolean;
+}
+
 /**
  * Procedural desktop floor surface cached to an offscreen Canvas2D texture.
- * Supports four switchable scenes: study, tatami, garden, and cafe.
+ * Supports all 13 switchable NekoScape v2.0 scenes.
  */
 export class HardwoodFloor extends Container {
   private readonly sprite: Sprite;
@@ -59,13 +71,16 @@ export class HardwoodFloor extends Container {
   }
 
   private rebuildTexture(width: number, height: number): void {
+    if (typeof document === 'undefined') {
+      return;
+    }
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const def = SCENE_THEME_DEFS[this.theme];
+    const def = SCENE_THEME_DEFS[this.theme] ?? SCENE_THEME_DEFS.study;
 
     switch (this.theme) {
       case 'tatami':
@@ -76,6 +91,67 @@ export class HardwoodFloor extends Container {
         break;
       case 'cafe':
         this.paintCafeFloor(ctx, width, height, def);
+        break;
+      case 'living_room':
+        this.paintHerringboneParquetFloor(ctx, width, height, def);
+        break;
+      case 'rainy_window':
+        this.paintPlankFloor(ctx, width, height, def, {
+          seed: 51107,
+          plankHeight: 48,
+          highlightRgba: 'rgba(204, 224, 242, 0.12)',
+          grainDarkRgba: 'rgba(34, 42, 50, 0.16)',
+          knotChance: 0.14,
+          isCoolSlate: true,
+        });
+        break;
+      case 'night_balcony':
+        this.paintDeckingFloor(ctx, width, height, def);
+        break;
+      case 'kitchen':
+        this.paintKitchenTileFloor(ctx, width, height, def);
+        break;
+      case 'bedroom':
+        this.paintPlankFloor(ctx, width, height, def, {
+          seed: 64219,
+          plankHeight: 60,
+          highlightRgba: 'rgba(255, 245, 228, 0.16)',
+          grainDarkRgba: 'rgba(116, 88, 60, 0.11)',
+          knotChance: 0.12,
+        });
+        break;
+      case 'snowy_window':
+        this.paintPlankFloor(ctx, width, height, def, {
+          seed: 78133,
+          plankHeight: 54,
+          highlightRgba: 'rgba(242, 250, 255, 0.18)',
+          grainDarkRgba: 'rgba(84, 102, 118, 0.14)',
+          knotChance: 0.15,
+          isFrosted: true,
+        });
+        break;
+      case 'sunbeam':
+        this.paintPlankFloor(ctx, width, height, def, {
+          seed: 89411,
+          plankHeight: 50,
+          highlightRgba: 'rgba(255, 240, 200, 0.17)',
+          grainDarkRgba: 'rgba(104, 68, 34, 0.12)',
+          knotChance: 0.1,
+          isStudioPaint: true,
+        });
+        break;
+      case 'aquarium':
+        this.paintPlankFloor(ctx, width, height, def, {
+          seed: 93701,
+          plankHeight: 52,
+          highlightRgba: 'rgba(130, 218, 232, 0.09)',
+          grainDarkRgba: 'rgba(18, 22, 28, 0.22)',
+          knotChance: 0.1,
+          isAquariumCaustics: true,
+        });
+        break;
+      case 'rooftop':
+        this.paintRooftopPaverFloor(ctx, width, height, def);
         break;
       case 'study':
       default:
@@ -131,18 +207,35 @@ export class HardwoodFloor extends Container {
     height: number,
     def: SceneThemeDefinition,
   ): void {
-    const rng = createSeededRng(48271);
+    this.paintPlankFloor(ctx, width, height, def, {
+      seed: 48271,
+      plankHeight: PLANK_HEIGHT,
+      highlightRgba: 'rgba(246, 214, 174, 0.14)',
+      grainDarkRgba: 'rgba(84, 52, 29, 0.14)',
+      knotChance: 0.22,
+    });
+  }
+
+  private paintPlankFloor(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    def: SceneThemeDefinition,
+    opts: PlankStyleOptions,
+  ): void {
+    const rng = createSeededRng(opts.seed);
     const palette = def.floor.palette;
     const grooveColor = def.floor.grooveHex;
+    const plankH = opts.plankHeight;
 
     ctx.fillStyle = def.floor.baseHex;
     ctx.fillRect(0, 0, width, height);
 
-    const rows = Math.ceil(height / PLANK_HEIGHT) + 1;
+    const rows = Math.ceil(height / plankH) + 1;
     let prevPaletteIdx = -1;
 
     for (let row = 0; row < rows; row++) {
-      const y = row * PLANK_HEIGHT;
+      const y = row * plankH;
       let x = -Math.round(((row * 163 + 47) % 280) + 40);
 
       while (x < width) {
@@ -154,10 +247,25 @@ export class HardwoodFloor extends Container {
         prevPaletteIdx = paletteIdx;
 
         const baseHex = palette[paletteIdx];
+        const midHex = palette[(paletteIdx + 1) % palette.length];
+        const endHex = palette[(paletteIdx + 2) % palette.length];
         const toneShift = Math.round((rng() - 0.5) * 14);
         const plankColor = shiftHexColor(baseHex, toneShift);
 
-        this.drawPlank(ctx, x, y, len, PLANK_HEIGHT, plankColor, toneShift, grooveColor, rng);
+        this.drawPlank(
+          ctx,
+          x,
+          y,
+          len,
+          plankH,
+          plankColor,
+          midHex,
+          endHex,
+          toneShift,
+          grooveColor,
+          opts,
+          rng,
+        );
         x += len;
       }
 
@@ -165,6 +273,56 @@ export class HardwoodFloor extends Container {
       ctx.globalAlpha = 0.72;
       ctx.fillRect(0, y, width, 1.5);
       ctx.globalAlpha = 1;
+    }
+
+    if (opts.isCoolSlate) {
+      // Cool rainy window glass reflection band near the top edge
+      const rainWash = ctx.createLinearGradient(0, 0, 0, Math.min(180, height * 0.28));
+      rainWash.addColorStop(0, 'rgba(176, 212, 240, 0.24)');
+      rainWash.addColorStop(0.55, 'rgba(148, 186, 216, 0.08)');
+      rainWash.addColorStop(1, 'rgba(148, 186, 216, 0)');
+      ctx.fillStyle = rainWash;
+      ctx.fillRect(0, 0, width, Math.min(180, height * 0.28));
+    }
+
+    if (opts.isFrosted) {
+      // Frosted snow-perimeter rim glow along upper window wall
+      const frostWash = ctx.createLinearGradient(0, 0, 0, Math.min(150, height * 0.24));
+      frostWash.addColorStop(0, 'rgba(235, 246, 255, 0.36)');
+      frostWash.addColorStop(0.6, 'rgba(216, 236, 252, 0.12)');
+      frostWash.addColorStop(1, 'rgba(216, 236, 252, 0)');
+      ctx.fillStyle = frostWash;
+      ctx.fillRect(0, 0, width, Math.min(150, height * 0.24));
+    }
+
+    if (opts.isStudioPaint) {
+      // Subtle dried pastel artist studio flecks near edges
+      const fleckColors = ['rgba(226, 132, 96, 0.14)', 'rgba(116, 166, 178, 0.14)', 'rgba(232, 194, 96, 0.16)'];
+      for (let i = 0; i < 24; i++) {
+        const fx = 60 + rng() * (width - 120);
+        const fy = 40 + rng() * (height - 80);
+        ctx.fillStyle = fleckColors[i % fleckColors.length];
+        ctx.beginPath();
+        ctx.arc(fx, fy, 1.5 + rng() * 2.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    if (opts.isAquariumCaustics) {
+      // Soft aqua pool sheen radiating near the upper-right tank area
+      const caustic = ctx.createRadialGradient(
+        width * 0.74,
+        height * 0.2,
+        12,
+        width * 0.74,
+        height * 0.2,
+        Math.min(width, height) * 0.42,
+      );
+      caustic.addColorStop(0, 'rgba(104, 224, 242, 0.16)');
+      caustic.addColorStop(0.55, 'rgba(72, 178, 204, 0.06)');
+      caustic.addColorStop(1, 'rgba(72, 178, 204, 0)');
+      ctx.fillStyle = caustic;
+      ctx.fillRect(0, 0, width, height);
     }
   }
 
@@ -175,8 +333,11 @@ export class HardwoodFloor extends Container {
     w: number,
     h: number,
     plankColor: string,
+    midHex: string,
+    endHex: string,
     toneShift: number,
     grooveColor: string,
+    opts: PlankStyleOptions,
     rng: () => number,
   ): void {
     ctx.save();
@@ -186,13 +347,13 @@ export class HardwoodFloor extends Container {
 
     const plankGrad = ctx.createLinearGradient(x, y, x + w, y + h);
     plankGrad.addColorStop(0, plankColor);
-    plankGrad.addColorStop(0.55, shiftHexColor('#C99768', toneShift - 3));
-    plankGrad.addColorStop(1, shiftHexColor('#B47F50', toneShift - 7));
+    plankGrad.addColorStop(0.55, shiftHexColor(midHex, toneShift - 3));
+    plankGrad.addColorStop(1, shiftHexColor(endHex, toneShift - 7));
     ctx.fillStyle = plankGrad;
     ctx.fillRect(x, y, w, h);
 
     const streakCount = 8 + Math.floor(rng() * 7);
-    const hasKnot = rng() < 0.22;
+    const hasKnot = rng() < opts.knotChance;
     const knotX = x + w * (0.22 + rng() * 0.56);
     const knotY = y + h * (0.28 + rng() * 0.44);
     const knotRadius = 4 + rng() * 4.5;
@@ -200,9 +361,7 @@ export class HardwoodFloor extends Container {
     for (let i = 0; i < streakCount; i++) {
       const baseY = y + 4 + ((i + rng() * 0.6) / streakCount) * (h - 8);
       const isHighlight = i % 3 === 0;
-      ctx.strokeStyle = isHighlight
-        ? 'rgba(246, 214, 174, 0.14)'
-        : 'rgba(84, 52, 29, 0.14)';
+      ctx.strokeStyle = isHighlight ? opts.highlightRgba : opts.grainDarkRgba;
       ctx.lineWidth = isHighlight ? 0.9 : 1.1;
 
       const phase = rng() * Math.PI * 2;
@@ -246,19 +405,19 @@ export class HardwoodFloor extends Container {
           0,
           Math.PI * 2,
         );
-        ctx.strokeStyle = 'rgba(72, 43, 22, 0.22)';
+        ctx.strokeStyle = opts.grainDarkRgba;
         ctx.lineWidth = 1;
         ctx.stroke();
       }
       ctx.beginPath();
       ctx.ellipse(knotX, knotY, knotRadius * 0.72, knotRadius * 0.42, 0, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(78, 47, 25, 0.36)';
+      ctx.fillStyle = opts.grainDarkRgba;
       ctx.fill();
     }
 
-    ctx.fillStyle = 'rgba(255, 237, 212, 0.14)';
+    ctx.fillStyle = opts.highlightRgba;
     ctx.fillRect(x, y + 1.5, w, 1.5);
-    ctx.fillStyle = 'rgba(66, 39, 20, 0.16)';
+    ctx.fillStyle = opts.grainDarkRgba;
     ctx.fillRect(x, y + h - 2, w, 2);
 
     ctx.fillStyle = grooveColor;
@@ -267,6 +426,248 @@ export class HardwoodFloor extends Container {
     ctx.globalAlpha = 1;
 
     ctx.restore();
+  }
+
+  private paintHerringboneParquetFloor(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    def: SceneThemeDefinition,
+  ): void {
+    const rng = createSeededRng(41179);
+    const palette = def.floor.palette;
+
+    ctx.fillStyle = def.floor.baseHex;
+    ctx.fillRect(0, 0, width, height);
+
+    const blockW = 74;
+    const blockH = 26;
+    const stepX = blockW * 0.7071;
+    const stepY = blockH * 1.4142;
+
+    const cols = Math.ceil(width / stepX) + 4;
+    const rows = Math.ceil(height / stepY) + 4;
+
+    for (let r = -2; r < rows; r++) {
+      for (let c = -2; c < cols; c++) {
+        const cx = c * stepX + (r % 2) * (stepX * 0.5);
+        const cy = r * stepY;
+        const angle = (c + r) % 2 === 0 ? Math.PI * 0.25 : -Math.PI * 0.25;
+        const baseHex = palette[Math.floor(rng() * palette.length)];
+        const shift = Math.round((rng() - 0.5) * 14);
+
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(angle);
+
+        const grad = ctx.createLinearGradient(-blockW * 0.5, 0, blockW * 0.5, 0);
+        grad.addColorStop(0, shiftHexColor(baseHex, shift + 4));
+        grad.addColorStop(0.6, shiftHexColor(baseHex, shift));
+        grad.addColorStop(1, shiftHexColor(baseHex, shift - 6));
+
+        ctx.fillStyle = grad;
+        ctx.fillRect(-blockW * 0.5, -blockH * 0.5, blockW, blockH);
+
+        // Subtle walnut satin grain
+        ctx.strokeStyle = 'rgba(42, 22, 10, 0.16)';
+        ctx.lineWidth = 0.9;
+        for (let g = -1; g <= 1; g++) {
+          const gy = g * 6 + (rng() - 0.5) * 2;
+          ctx.beginPath();
+          ctx.moveTo(-blockW * 0.45, gy);
+          ctx.lineTo(blockW * 0.45, gy + (rng() - 0.5) * 2);
+          ctx.stroke();
+        }
+
+        ctx.strokeStyle = def.floor.grooveHex;
+        ctx.lineWidth = 1.2;
+        ctx.strokeRect(-blockW * 0.5, -blockH * 0.5, blockW, blockH);
+
+        ctx.fillStyle = 'rgba(255, 224, 186, 0.08)';
+        ctx.fillRect(-blockW * 0.5 + 1, -blockH * 0.5 + 1, blockW - 2, 1.2);
+        ctx.restore();
+      }
+    }
+  }
+
+  private paintDeckingFloor(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    def: SceneThemeDefinition,
+  ): void {
+    const rng = createSeededRng(57391);
+    const palette = def.floor.palette;
+    const slatH = 38;
+    const gap = 4;
+
+    // Deep dark balcony shadow bed beneath slatted decking
+    ctx.fillStyle = '#151214';
+    ctx.fillRect(0, 0, width, height);
+
+    const rows = Math.ceil(height / slatH) + 1;
+    for (let row = 0; row < rows; row++) {
+      const y = row * slatH + gap * 0.5;
+      const h = slatH - gap;
+      let x = -Math.round(((row * 131 + 29) % 240) + 20);
+
+      while (x < width) {
+        const len = Math.round(220 + rng() * 190);
+        const baseHex = palette[Math.floor(rng() * palette.length)];
+        const shift = Math.round((rng() - 0.5) * 10);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, len - 2, h);
+        ctx.clip();
+
+        const grad = ctx.createLinearGradient(x, y, x, y + h);
+        grad.addColorStop(0, shiftHexColor(baseHex, shift + 4));
+        grad.addColorStop(0.55, shiftHexColor(baseHex, shift));
+        grad.addColorStop(1, shiftHexColor(baseHex, shift - 6));
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y, len - 2, h);
+
+        // Weathered outdoor cedar grain lines
+        for (let i = 0; i < 6; i++) {
+          const gy = y + 4 + (i / 6) * (h - 8);
+          ctx.strokeStyle = i % 2 === 0 ? 'rgba(170, 148, 136, 0.1)' : 'rgba(20, 14, 12, 0.22)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x, gy);
+          ctx.lineTo(x + len, gy + (rng() - 0.5) * 2);
+          ctx.stroke();
+        }
+
+        // Subtle deck screw heads near board ends
+        const screwX = x + 12;
+        if (screwX > 0 && screwX < width) {
+          ctx.fillStyle = 'rgba(24, 18, 16, 0.65)';
+          ctx.beginPath();
+          ctx.arc(screwX, y + 7, 1.8, 0, Math.PI * 2);
+          ctx.arc(screwX, y + h - 7, 1.8, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Moonlit top lip highlight
+        ctx.fillStyle = 'rgba(182, 206, 240, 0.08)';
+        ctx.fillRect(x, y, len - 2, 1.2);
+        ctx.restore();
+
+        x += len;
+      }
+    }
+  }
+
+  private paintKitchenTileFloor(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    def: SceneThemeDefinition,
+  ): void {
+    const rng = createSeededRng(71237);
+    const palette = def.floor.palette;
+    const tileSize = 54;
+    const grout = 2.5;
+
+    ctx.fillStyle = def.floor.baseHex;
+    ctx.fillRect(0, 0, width, height);
+
+    const cols = Math.ceil(width / tileSize) + 1;
+    const rows = Math.ceil(height / tileSize) + 1;
+
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        // Warm cream primary tiles with muted sage accent tiles in classic diamond pattern
+        const isSage = (row % 2 === 0 && col % 2 === 0) || (row % 4 === 2 && col % 4 === 2);
+        const poolOffset = isSage ? 3 : 0;
+        const baseHex = palette[poolOffset + Math.floor(rng() * 3)];
+        const shift = Math.round((rng() - 0.5) * 8);
+
+        const tx = col * tileSize + grout * 0.5;
+        const ty = row * tileSize + grout * 0.5;
+        const tw = tileSize - grout;
+        const th = tileSize - grout;
+
+        const grad = ctx.createLinearGradient(tx, ty, tx + tw, ty + th);
+        grad.addColorStop(0, shiftHexColor(baseHex, shift + 4));
+        grad.addColorStop(1, shiftHexColor(baseHex, shift - 4));
+        ctx.fillStyle = grad;
+        ctx.fillRect(tx, ty, tw, th);
+
+        // Glazed ceramic sheen highlight
+        ctx.fillStyle = 'rgba(255, 253, 248, 0.34)';
+        ctx.fillRect(tx + 1, ty + 1, tw - 2, 1.6);
+        ctx.fillRect(tx + 1, ty + 1, 1.6, th - 2);
+        ctx.fillStyle = 'rgba(92, 82, 68, 0.14)';
+        ctx.fillRect(tx, ty + th - 1.5, tw, 1.5);
+        ctx.fillRect(tx + tw - 1.5, ty, 1.5, th);
+      }
+    }
+
+    // Warm butcher-block oak kitchen counter edge strip along top edge
+    const stripH = 26;
+    const stripGrad = ctx.createLinearGradient(0, 0, 0, stripH);
+    stripGrad.addColorStop(0, '#C5925E');
+    stripGrad.addColorStop(0.85, '#B27E4B');
+    stripGrad.addColorStop(1, '#7A512B');
+    ctx.fillStyle = stripGrad;
+    ctx.fillRect(0, 0, width, stripH);
+    ctx.fillStyle = 'rgba(42, 26, 14, 0.24)';
+    ctx.fillRect(0, stripH, width, 4);
+  }
+
+  private paintRooftopPaverFloor(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    def: SceneThemeDefinition,
+  ): void {
+    const rng = createSeededRng(98413);
+    const palette = def.floor.palette;
+    const paverW = 86;
+    const paverH = 64;
+    const grout = 4;
+
+    ctx.fillStyle = def.floor.baseHex;
+    ctx.fillRect(0, 0, width, height);
+
+    const rows = Math.ceil(height / paverH) + 1;
+    const cols = Math.ceil(width / paverW) + 2;
+
+    for (let r = 0; r < rows; r++) {
+      const xOffset = (r % 2) * (paverW * 0.5);
+      for (let c = -1; c < cols; c++) {
+        const px = c * paverW + xOffset + grout * 0.5;
+        const py = r * paverH + grout * 0.5;
+        const pw = paverW - grout;
+        const ph = paverH - grout;
+        const baseHex = palette[Math.floor(rng() * palette.length)];
+        const shift = Math.round((rng() - 0.5) * 12);
+
+        const grad = ctx.createLinearGradient(px, py, px + pw, py + ph);
+        grad.addColorStop(0, shiftHexColor(baseHex, shift + 5));
+        grad.addColorStop(0.6, shiftHexColor(baseHex, shift));
+        grad.addColorStop(1, shiftHexColor(baseHex, shift - 6));
+        ctx.fillStyle = grad;
+        ctx.fillRect(px, py, pw, ph);
+
+        // Concrete aggregate specks
+        for (let s = 0; s < 10; s++) {
+          const sx = px + 6 + rng() * (pw - 12);
+          const sy = py + 6 + rng() * (ph - 12);
+          ctx.fillStyle = rng() > 0.5 ? 'rgba(246, 212, 198, 0.14)' : 'rgba(54, 40, 44, 0.16)';
+          ctx.beginPath();
+          ctx.arc(sx, sy, 0.8 + rng() * 1.4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = 'rgba(255, 224, 196, 0.14)';
+        ctx.fillRect(px, py, pw, 1.5);
+        ctx.fillStyle = 'rgba(42, 26, 32, 0.18)';
+        ctx.fillRect(px, py + ph - 1.5, pw, 1.5);
+      }
+    }
   }
 
   private paintTatamiFloor(
@@ -283,7 +684,6 @@ export class HardwoodFloor extends Container {
     ctx.fillStyle = def.floor.baseHex;
     ctx.fillRect(0, 0, width, height);
 
-    // Classic yojohan (3U x 3U) spiral tatami module
     const u = 132;
     const moduleSize = u * 3;
     const offsetX = -Math.round((moduleSize - (width % moduleSize)) * 0.5);
@@ -343,7 +743,6 @@ export class HardwoodFloor extends Container {
     ctx.rect(x, y, w, h);
     ctx.clip();
 
-    // Subtle sheen gradient perpendicular to rush weave
     const grad = horizontalWeave
       ? ctx.createLinearGradient(x, y, x, y + h)
       : ctx.createLinearGradient(x, y, x + w, y);
@@ -353,7 +752,6 @@ export class HardwoodFloor extends Container {
     ctx.fillStyle = grad;
     ctx.fillRect(x, y, w, h);
 
-    // Fine igusa rush-grass ribbing
     const reedStep = 3.5;
     if (horizontalWeave) {
       for (let ry = y + 2; ry < y + h; ry += reedStep) {
@@ -367,7 +765,6 @@ export class HardwoodFloor extends Container {
         ctx.lineTo(x + w, ry);
         ctx.stroke();
       }
-      // Cross warp-binding stitches
       ctx.strokeStyle = 'rgba(116, 112, 68, 0.13)';
       ctx.lineWidth = 1;
       for (let wx = x + 16; wx < x + w; wx += 26) {
@@ -398,7 +795,6 @@ export class HardwoodFloor extends Container {
       }
     }
 
-    // Dark indigo-moss heri cloth brocade borders along two opposing edges
     const heriWidth = 13;
     if (horizontalWeave) {
       this.drawHeriStrip(ctx, x, y, w, heriWidth, true, heriHex);
@@ -408,7 +804,6 @@ export class HardwoodFloor extends Container {
       this.drawHeriStrip(ctx, x + w - heriWidth, y, heriWidth, h, false, heriHex);
     }
 
-    // Sunken tatami perimeter seam and subtle top-left lip highlight
     ctx.strokeStyle = 'rgba(248, 243, 212, 0.14)';
     ctx.lineWidth = 1.5;
     ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
@@ -434,7 +829,6 @@ export class HardwoodFloor extends Container {
     ctx.fillStyle = heriHex;
     ctx.fillRect(x, y, w, h);
 
-    // Inner fabric edge thread
     ctx.fillStyle = 'rgba(195, 186, 134, 0.24)';
     if (horizontal) {
       ctx.fillRect(x, y + 1, w, 1);
@@ -444,7 +838,6 @@ export class HardwoodFloor extends Container {
       ctx.fillRect(x + w - 2, y, 1, h);
     }
 
-    // Traditional geometric diamond-lattice brocade stitches
     ctx.strokeStyle = 'rgba(176, 166, 114, 0.28)';
     ctx.lineWidth = 1;
     const step = 12;
@@ -480,11 +873,9 @@ export class HardwoodFloor extends Container {
     const rng = createSeededRng(73129);
     const palette = def.floor.palette;
 
-    // Mossy mortar base
     ctx.fillStyle = def.floor.baseHex;
     ctx.fillRect(0, 0, width, height);
 
-    // Mottled moss texture across mortar joints
     const mossDotCount = Math.floor((width * height) / 420);
     for (let i = 0; i < mossDotCount; i++) {
       const mx = rng() * width;
@@ -497,7 +888,6 @@ export class HardwoodFloor extends Container {
       ctx.fill();
     }
 
-    // Irregular courtyard flagstones with mossy gaps
     const joint = 8;
     let y = -12;
     let rowIdx = 0;
@@ -570,7 +960,6 @@ export class HardwoodFloor extends Container {
       ctx.closePath();
     };
 
-    // Soft moss under-shadow
     ctx.save();
     ctx.translate(1.5, 2.5);
     traceStone();
@@ -589,7 +978,6 @@ export class HardwoodFloor extends Container {
     ctx.fillStyle = grad;
     ctx.fillRect(x - 6, y - 6, w + 12, h + 12);
 
-    // Mineral speckles and weathering marks
     const specks = 12 + Math.floor(rng() * 10);
     for (let i = 0; i < specks; i++) {
       const sx = x + 6 + rng() * (w - 12);
@@ -606,7 +994,6 @@ export class HardwoodFloor extends Container {
       ctx.fill();
     }
 
-    // Occasional hairline crack
     if (rng() < 0.24) {
       const cx0 = x + w * (0.2 + rng() * 0.6);
       const cy0 = y + h * (0.15 + rng() * 0.3);
@@ -619,7 +1006,6 @@ export class HardwoodFloor extends Container {
       ctx.stroke();
     }
 
-    // Edge bevel highlight & bottom shadow
     traceStone();
     ctx.strokeStyle = 'rgba(248, 242, 226, 0.18)';
     ctx.lineWidth = 2.5;
@@ -627,7 +1013,6 @@ export class HardwoodFloor extends Container {
 
     ctx.restore();
 
-    // Creeping moss tufts at random stone corners
     if (rng() < 0.65) {
       const tuftCorner = pts[Math.floor(rng() * 4) * 3];
       const tuftCount = 3 + Math.floor(rng() * 3);
@@ -654,7 +1039,6 @@ export class HardwoodFloor extends Container {
     const tileSize = 68;
     const grout = 3;
 
-    // Warm espresso-taupe grout bed
     ctx.fillStyle = def.floor.baseHex;
     ctx.fillRect(0, 0, width, height);
 
@@ -702,7 +1086,6 @@ export class HardwoodFloor extends Container {
     ctx.fillRect(x, y, w, h);
 
     if (isTerracotta) {
-      // Kiln clay subtle mineral grain
       for (let i = 0; i < 8; i++) {
         const gx = x + 6 + rng() * (w - 12);
         const gy = y + 6 + rng() * (h - 12);
@@ -712,7 +1095,6 @@ export class HardwoodFloor extends Container {
         ctx.fill();
       }
     } else {
-      // Travertine sedimentary mineral veining
       const veins = 3 + Math.floor(rng() * 2);
       for (let i = 0; i < veins; i++) {
         const vy = y + 10 + rng() * (h - 20);
@@ -730,7 +1112,6 @@ export class HardwoodFloor extends Container {
         );
         ctx.stroke();
       }
-      // Natural travertine pin-pores
       for (let p = 0; p < 5; p++) {
         const px = x + 8 + rng() * (w - 16);
         const py = y + 8 + rng() * (h - 16);
@@ -739,7 +1120,6 @@ export class HardwoodFloor extends Container {
       }
     }
 
-    // Soft ceramic edge bevel
     ctx.fillStyle = 'rgba(255, 248, 238, 0.22)';
     ctx.fillRect(x, y, w, 1.5);
     ctx.fillRect(x, y, 1.5, h);

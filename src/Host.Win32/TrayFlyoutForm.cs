@@ -25,24 +25,62 @@ public sealed class TrayFlyoutForm : Form
         ("mix", "All Breeds", ModernTheme.AccentHoney),
         ("persian", "Persian", Color.FromArgb(242, 224, 198)),
         ("siamese", "Siamese", Color.FromArgb(218, 198, 174)),
-        ("british_shorthair", "British", Color.FromArgb(146, 158, 172)),
+        ("british_shorthair", "British Shorthair", Color.FromArgb(146, 158, 172)),
         ("munchkin", "Munchkin", Color.FromArgb(228, 148, 86)),
         ("sphynx", "Sphynx", Color.FromArgb(224, 176, 158)),
-        ("domestic_shorthair", "Domestic", Color.FromArgb(182, 128, 84)),
+        ("domestic_shorthair", "Domestic Shorthair", Color.FromArgb(182, 128, 84)),
+        ("maine_coon", "Maine Coon", Color.FromArgb(148, 108, 76)),
+        ("scottish_fold", "Scottish Fold", Color.FromArgb(174, 182, 194)),
+        ("bengal", "Bengal", Color.FromArgb(216, 156, 72)),
+        ("ragdoll", "Ragdoll", Color.FromArgb(236, 228, 218)),
+        ("russian_blue", "Russian Blue", Color.FromArgb(118, 134, 152)),
+        ("abyssinian", "Abyssinian", Color.FromArgb(196, 114, 62)),
+        ("american_curl", "American Curl", Color.FromArgb(204, 166, 132)),
+        ("japanese_bobtail", "Japanese Bobtail", Color.FromArgb(242, 232, 220)),
+    ];
+
+    internal static readonly (string Key, string Label, Color Swatch)[] ScenePickerOptions =
+    [
+        ("study", "Golden Study", Color.FromArgb(148, 98, 56)),
+        ("tatami", "Kyoto Tatami", Color.FromArgb(164, 152, 92)),
+        ("garden", "Sunlit Garden", Color.FromArgb(72, 130, 74)),
+        ("cafe", "Cat Cafe", Color.FromArgb(196, 118, 76)),
+        ("living_room", "Living Room", Color.FromArgb(176, 92, 68)),
+        ("rainy_window", "Rainy Window", Color.FromArgb(92, 126, 156)),
+        ("night_balcony", "Night Balcony", Color.FromArgb(78, 92, 138)),
+        ("kitchen", "Sunny Kitchen", Color.FromArgb(218, 178, 112)),
+        ("bedroom", "Cozy Bedroom", Color.FromArgb(158, 122, 142)),
+        ("snowy_window", "Snowy Window", Color.FromArgb(186, 208, 226)),
+        ("sunbeam", "Sunbeam Studio", Color.FromArgb(236, 194, 108)),
+        ("aquarium", "Aquarium Fort", Color.FromArgb(62, 156, 178)),
+        ("rooftop", "Sunset Rooftop", Color.FromArgb(212, 118, 102)),
+    ];
+
+    internal static readonly (string Key, string Label, Color Swatch)[] CollarPickerOptions =
+    [
+        ("none", "None", Color.Transparent),
+        ("#d94f5c", "Crimson", Color.FromArgb(217, 79, 92)),
+        ("#2fa69a", "Teal", Color.FromArgb(47, 166, 154)),
+        ("#e2a93b", "Gold", Color.FromArgb(226, 169, 59)),
+        ("#8b74d6", "Lavender", Color.FromArgb(139, 116, 214)),
     ];
 
     private const int PadX = 18;
-    private const int ContentWidth = 328;
+    private const int ContentWidth = 336;
 
     private readonly Label _statusLabel;
-    private readonly ModernSegmentedBar _sceneBar;
+    private readonly ModernOptionPicker _scenePicker;
     private readonly ModernSegmentedBar _lightingBar;
     private readonly ModernStepperCard _catStepper;
     private readonly ModernOptionPicker _breedPicker;
+    private readonly ModernActionChip _kittenChip;
+    private readonly ModernActionChip _soundChip;
     private readonly ModernActionChip _laserChip;
     private readonly ModernActionChip _yarnChip;
-    private readonly ModernActionChip _boxChip;
     private readonly ModernActionChip _treatChip;
+    private readonly ModernActionChip _mouseChip;
+    private readonly ModernActionChip _fishChip;
+    private readonly ModernActionChip _boxChip;
     private readonly ModernActionChip _pauseChip;
     private readonly ModernActionChip _modeChip;
     private readonly ModernActionChip _settingsChip;
@@ -57,10 +95,14 @@ public sealed class TrayFlyoutForm : Form
     public event Action<string>? LightingSelected;
     public event Action<int>? CatCountChanged;
     public event Action<string>? BreedModeSelected;
+    public event Action? ToggleKittenModeRequested;
+    public event Action? ToggleSoundRequested;
     public event Action? ToggleLaserRequested;
     public event Action? TossYarnRequested;
     public event Action? ToggleBoxRequested;
     public event Action? DropTreatRequested;
+    public event Action? DropMouseRequested;
+    public event Action? DropFishRequested;
     public event Action? TogglePauseRequested;
     public event Action? ToggleWindowedModeRequested;
     public event Action? OpenSettingsRequested;
@@ -85,13 +127,13 @@ public sealed class TrayFlyoutForm : Form
         BackColor = ModernTheme.SurfaceWindow;
         ForeColor = ModernTheme.InkPrimary;
         Font = FontBase;
-        ClientSize = new Size(364, 498);
+        ClientSize = new Size(372, 542);
 
         // Header
         var titleLabel = new Label
         {
             Text = "NekoScape",
-            Location = new Point(PadX, 16),
+            Location = new Point(PadX, 14),
             Size = new Size(140, 24),
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = ModernTheme.InkPrimary,
@@ -102,29 +144,25 @@ public sealed class TrayFlyoutForm : Form
         _statusLabel = new Label
         {
             Text = string.Empty,
-            Location = new Point(160, 18),
-            Size = new Size(186, 20),
+            Location = new Point(160, 16),
+            Size = new Size(194, 20),
             TextAlign = ContentAlignment.MiddleRight,
             ForeColor = ModernTheme.InkSecondary,
             BackColor = Color.Transparent,
             Font = FontStatus,
         };
 
-        // 1. Scene Selector
-        var sceneHeader = CreateSectionLabel("SCENE", 52);
-        _sceneBar = new ModernSegmentedBar(
-            [
-                ("study", "Study"),
-                ("tatami", "Tatami"),
-                ("garden", "Garden"),
-                ("cafe", "Cafe"),
-            ])
+        // 1. Scene Selector (all 13 scenes)
+        var sceneHeader = CreateSectionLabel("SCENE", 48);
+        _scenePicker = new ModernOptionPicker("Scene", ScenePickerOptions, _state.Settings.SceneTheme)
         {
-            Location = new Point(PadX, 72),
-            Size = new Size(ContentWidth, 36),
-            AccessibleName = "Scene selector",
+            Location = new Point(PadX, 66),
+            Size = new Size(ContentWidth, 42),
+            AccessibleName = "Scene theme selector",
         };
-        _sceneBar.SelectionChanged += theme =>
+        _scenePicker.MenuOpening += () => _suppressDeactivate = true;
+        _scenePicker.MenuClosed += OnPickerMenuClosed;
+        _scenePicker.SelectionChanged += theme =>
         {
             if (!_suppressEvents)
             {
@@ -133,7 +171,7 @@ public sealed class TrayFlyoutForm : Form
         };
 
         // 2. Lighting Selector
-        var lightingHeader = CreateSectionLabel("LIGHTING", 120);
+        var lightingHeader = CreateSectionLabel("LIGHTING", 118);
         _lightingBar = new ModernSegmentedBar(
             [
                 ("auto", "Auto"),
@@ -142,8 +180,8 @@ public sealed class TrayFlyoutForm : Form
                 ("night", "Night"),
             ])
         {
-            Location = new Point(PadX, 140),
-            Size = new Size(ContentWidth, 36),
+            Location = new Point(PadX, 136),
+            Size = new Size(ContentWidth, 34),
             AccessibleName = "Lighting mode selector",
         };
         _lightingBar.SelectionChanged += mode =>
@@ -154,13 +192,13 @@ public sealed class TrayFlyoutForm : Form
             }
         };
 
-        // 3. Cats & Breeds
-        var catsHeader = CreateSectionLabel("CATS & BREEDS", 188);
-        _catStepper = new ModernStepperCard("Cats", 1, 12, _state.Settings.CatCount)
+        // 3. Cats & Breeds (Unlimited Cats + 14 Breeds + Kitten & Sound toggles)
+        var catsHeader = CreateSectionLabel("CATS & BREEDS", 180);
+        _catStepper = new ModernStepperCard("Cats", NekoSettings.MinCatCount, int.MaxValue, _state.Settings.CatCount)
         {
-            Location = new Point(PadX, 208),
+            Location = new Point(PadX, 198),
             Size = new Size(ContentWidth, 46),
-            AccessibleName = "Cat count stepper",
+            AccessibleName = "Cat count stepper (Shift-click for 5, click number to type)",
         };
         _catStepper.ValueChanged += nextCount =>
         {
@@ -172,19 +210,12 @@ public sealed class TrayFlyoutForm : Form
 
         _breedPicker = new ModernOptionPicker("Breed", BreedPickerOptions, _state.Settings.BreedMode)
         {
-            Location = new Point(PadX, 262),
-            Size = new Size(ContentWidth, 44),
+            Location = new Point(PadX, 250),
+            Size = new Size(ContentWidth, 42),
             AccessibleName = "Breed mix selector",
         };
         _breedPicker.MenuOpening += () => _suppressDeactivate = true;
-        _breedPicker.MenuClosed += () =>
-        {
-            _suppressDeactivate = false;
-            if (!IsDisposed && Visible)
-            {
-                Activate();
-            }
-        };
+        _breedPicker.MenuClosed += OnPickerMenuClosed;
         _breedPicker.SelectionChanged += breedMode =>
         {
             if (!_suppressEvents)
@@ -193,50 +224,84 @@ public sealed class TrayFlyoutForm : Form
             }
         };
 
-        // 4. Quick Play (2x2 generous chips)
-        var playHeader = CreateSectionLabel("QUICK PLAY", 318);
-        const int halfW = 159;
-        const int colGap = 10;
+        const int halfW = 163;
+        const int halfGap = 10;
+        _kittenChip = new ModernActionChip("Kitten Mode", glyph: ActionGlyph.Kitten)
+        {
+            Location = new Point(PadX, 300),
+            Size = new Size(halfW, 32),
+            AccessibleName = "Toggle kitten mode",
+        };
+        _kittenChip.Click += (_, _) => ToggleKittenModeRequested?.Invoke();
+
+        _soundChip = new ModernActionChip("Sound Off", glyph: ActionGlyph.SoundOff)
+        {
+            Location = new Point(PadX + halfW + halfGap, 300),
+            Size = new Size(halfW, 32),
+            AccessibleName = "Toggle cat sounds",
+        };
+        _soundChip.Click += (_, _) => ToggleSoundRequested?.Invoke();
+
+        // 4. Quick Play (3x2 clean grid)
+        var playHeader = CreateSectionLabel("QUICK PLAY", 344);
+        const int playW = 108;
+        const int playGap = 6;
 
         _laserChip = new ModernActionChip("Laser", useCoralAccent: true, glyph: ActionGlyph.Laser)
         {
-            Location = new Point(PadX, 338),
-            Size = new Size(halfW, 36),
+            Location = new Point(PadX, 362),
+            Size = new Size(playW, 34),
             AccessibleName = "Toggle laser pointer",
         };
         _laserChip.Click += (_, _) => ToggleLaserRequested?.Invoke();
 
         _yarnChip = new ModernActionChip("Toss Yarn", glyph: ActionGlyph.Yarn)
         {
-            Location = new Point(PadX + halfW + colGap, 338),
-            Size = new Size(halfW, 36),
+            Location = new Point(PadX + playW + playGap, 362),
+            Size = new Size(playW, 34),
             AccessibleName = "Toss yarn ball",
         };
         _yarnChip.Click += (_, _) => TossYarnRequested?.Invoke();
 
-        _boxChip = new ModernActionChip("Scene Box", glyph: ActionGlyph.Box)
-        {
-            Location = new Point(PadX, 384),
-            Size = new Size(halfW, 36),
-            AccessibleName = "Toggle cardboard box",
-        };
-        _boxChip.Click += (_, _) => ToggleBoxRequested?.Invoke();
-
         _treatChip = new ModernActionChip("Drop Treat", glyph: ActionGlyph.Treat)
         {
-            Location = new Point(PadX + halfW + colGap, 384),
-            Size = new Size(halfW, 36),
+            Location = new Point(PadX + (playW + playGap) * 2, 362),
+            Size = new Size(playW, 34),
             AccessibleName = "Drop cat treat",
         };
         _treatChip.Click += (_, _) => DropTreatRequested?.Invoke();
 
+        _mouseChip = new ModernActionChip("Mouse Toy", glyph: ActionGlyph.Mouse)
+        {
+            Location = new Point(PadX, 404),
+            Size = new Size(playW, 34),
+            AccessibleName = "Drop plush mouse toy",
+        };
+        _mouseChip.Click += (_, _) => DropMouseRequested?.Invoke();
+
+        _fishChip = new ModernActionChip("Fish Toy", glyph: ActionGlyph.Fish)
+        {
+            Location = new Point(PadX + playW + playGap, 404),
+            Size = new Size(playW, 34),
+            AccessibleName = "Drop flopping fish toy",
+        };
+        _fishChip.Click += (_, _) => DropFishRequested?.Invoke();
+
+        _boxChip = new ModernActionChip("Scene Box", glyph: ActionGlyph.Box)
+        {
+            Location = new Point(PadX + (playW + playGap) * 2, 404),
+            Size = new Size(playW, 34),
+            AccessibleName = "Toggle cardboard box",
+        };
+        _boxChip.Click += (_, _) => ToggleBoxRequested?.Invoke();
+
         // 5. Subtle Bottom Footer Bar
-        const int footerW = 104;
-        const int footerGap = 8;
+        const int footerW = 106;
+        const int footerGap = 9;
 
         _pauseChip = new ModernActionChip("Pause", glyph: ActionGlyph.Pause)
         {
-            Location = new Point(PadX, 446),
+            Location = new Point(PadX, 490),
             Size = new Size(footerW, 34),
             AccessibleName = "Pause or resume simulation",
         };
@@ -244,7 +309,7 @@ public sealed class TrayFlyoutForm : Form
 
         _modeChip = new ModernActionChip("Windowed", glyph: ActionGlyph.Window)
         {
-            Location = new Point(PadX + footerW + footerGap, 446),
+            Location = new Point(PadX + footerW + footerGap, 490),
             Size = new Size(footerW, 34),
             AccessibleName = "Toggle windowed or wallpaper mode",
         };
@@ -256,7 +321,7 @@ public sealed class TrayFlyoutForm : Form
 
         _settingsChip = new ModernActionChip("Settings\u2026", glyph: ActionGlyph.Settings)
         {
-            Location = new Point(PadX + (footerW + footerGap) * 2, 446),
+            Location = new Point(PadX + (footerW + footerGap) * 2, 490),
             Size = new Size(footerW, 34),
             AccessibleName = "Open settings",
         };
@@ -270,17 +335,21 @@ public sealed class TrayFlyoutForm : Form
             titleLabel,
             _statusLabel,
             sceneHeader,
-            _sceneBar,
+            _scenePicker,
             lightingHeader,
             _lightingBar,
             catsHeader,
             _catStepper,
             _breedPicker,
+            _kittenChip,
+            _soundChip,
             playHeader,
             _laserChip,
             _yarnChip,
-            _boxChip,
             _treatChip,
+            _mouseChip,
+            _fishChip,
+            _boxChip,
             _pauseChip,
             _modeChip,
             _settingsChip,
@@ -288,6 +357,15 @@ public sealed class TrayFlyoutForm : Form
 
         ResumeLayout(performLayout: false);
         ApplyStateVisuals();
+    }
+
+    private void OnPickerMenuClosed()
+    {
+        _suppressDeactivate = false;
+        if (!IsDisposed && Visible)
+        {
+            Activate();
+        }
     }
 
     public void PrepareAnchor(Point cursorScreenPoint)
@@ -386,7 +464,7 @@ public sealed class TrayFlyoutForm : Form
         ModernTheme.ConfigureHighQuality(e.Graphics);
 
         // Compute divider dynamically from scaled controls so it stays centered at 125%-200% DPI.
-        int padX = _sceneBar.Left;
+        int padX = _scenePicker.Left;
         int dividerY = (_boxChip.Bottom + _pauseChip.Top) / 2;
         using (Pen dividerPen = new(ModernTheme.Divider, 1f))
         {
@@ -427,10 +505,17 @@ public sealed class TrayFlyoutForm : Form
                 : (_state.IsWindowedMode ? "Windowed" : "Wallpaper");
             _statusLabel.Text = $"{shownCats} cats \u00b7 {modeStatus}";
 
-            _sceneBar.SelectedKey = scene;
+            _scenePicker.SelectedKey = scene;
             _lightingBar.SelectedKey = lighting;
             _catStepper.Value = settings.CatCount;
             _breedPicker.SelectedKey = breedMode;
+
+            _kittenChip.Active = settings.KittenMode;
+            _kittenChip.ChipLabel = settings.KittenMode ? "Kittens On" : "Kitten Mode";
+
+            _soundChip.Active = settings.SoundEnabled;
+            _soundChip.ChipLabel = settings.SoundEnabled ? "Sound On" : "Sound Off";
+            _soundChip.Glyph = settings.SoundEnabled ? ActionGlyph.SoundOn : ActionGlyph.SoundOff;
 
             _laserChip.Active = _state.LaserActive;
             _laserChip.ChipLabel = _state.LaserActive ? "Laser On" : "Laser";

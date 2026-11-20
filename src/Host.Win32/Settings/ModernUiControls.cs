@@ -13,6 +13,12 @@ internal enum ActionGlyph
     Yarn,
     Box,
     Treat,
+    Mouse,
+    Fish,
+    SoundOn,
+    SoundOff,
+    Kitten,
+    Camera,
     Pause,
     Play,
     Window,
@@ -503,7 +509,9 @@ internal sealed class ModernStepperCard : Control
     private readonly int _min;
     private readonly int _max;
     private int _value;
-    private int _hoveredPart; // 0 = none, 1 = minus, 2 = plus
+    private int _hoveredPart; // 0 = none, 1 = minus, 2 = plus, 3 = value pill
+    private TextBox? _inlineEditor;
+    private bool _committingEdit;
 
     public event Action<int>? ValueChanged;
 
@@ -511,8 +519,8 @@ internal sealed class ModernStepperCard : Control
     {
         _title = title;
         _min = min;
-        _max = max;
-        _value = Math.Clamp(initialValue, min, max);
+        _max = Math.Max(min, max);
+        _value = Math.Clamp(initialValue, _min, _max);
         _unitSuffix = unitSuffix;
 
         SetStyle(
@@ -525,6 +533,8 @@ internal sealed class ModernStepperCard : Control
         TabStop = true;
         Height = 46;
     }
+
+    public bool IsUncapped => _max == int.MaxValue;
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public int Value
@@ -546,14 +556,14 @@ internal sealed class ModernStepperCard : Control
     {
         float s = DpiScale;
         float btn = 28f * s;
-        return new(Width - 110f * s, (Height - btn) * 0.5f, btn, btn);
+        return new(Width - 118f * s, (Height - btn) * 0.5f, btn, btn);
     }
 
     private RectangleF GetValueRect()
     {
         float s = DpiScale;
         float h = 28f * s;
-        return new(Width - 78f * s, (Height - h) * 0.5f, 38f * s, h);
+        return new(Width - 86f * s, (Height - h) * 0.5f, 46f * s, h);
     }
 
     private RectangleF GetPlusRect()
@@ -577,7 +587,8 @@ internal sealed class ModernStepperCard : Control
 
     protected override bool IsInputKey(Keys keyData)
     {
-        if (keyData is Keys.Left or Keys.Right or Keys.Up or Keys.Down)
+        Keys keyCode = keyData & Keys.KeyCode;
+        if (keyCode is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.PageUp or Keys.PageDown)
         {
             return true;
         }
@@ -587,18 +598,20 @@ internal sealed class ModernStepperCard : Control
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
-        if (e.KeyCode is Keys.Left or Keys.Down && _value > _min)
+        int step = e.Shift || e.KeyCode is Keys.PageUp or Keys.PageDown ? 5 : 1;
+        if (e.KeyCode is Keys.Left or Keys.Down or Keys.PageDown && _value > _min)
         {
-            _value--;
-            Invalidate();
-            ValueChanged?.Invoke(_value);
+            ApplyStep(-step);
             e.Handled = true;
         }
-        else if (e.KeyCode is Keys.Right or Keys.Up && _value < _max)
+        else if (e.KeyCode is Keys.Right or Keys.Up or Keys.PageUp && _value < _max)
         {
-            _value++;
-            Invalidate();
-            ValueChanged?.Invoke(_value);
+            ApplyStep(step);
+            e.Handled = true;
+        }
+        else if (e.KeyCode is Keys.Enter or Keys.F2)
+        {
+            BeginInlineEdit();
             e.Handled = true;
         }
     }
@@ -615,10 +628,18 @@ internal sealed class ModernStepperCard : Control
         {
             nextPart = 2;
         }
+        else if (GetValueRect().Contains(e.Location))
+        {
+            nextPart = 3;
+        }
 
-        Cursor = (nextPart == 1 && _value > _min) || (nextPart == 2 && _value < _max)
-            ? Cursors.Hand
-            : Cursors.Default;
+        Cursor = nextPart switch
+        {
+            1 when _value > _min => Cursors.Hand,
+            2 when _value < _max => Cursors.Hand,
+            3 => Cursors.IBeam,
+            _ => Cursors.Default,
+        };
 
         if (nextPart != _hoveredPart)
         {
@@ -645,18 +666,132 @@ internal sealed class ModernStepperCard : Control
             return;
         }
 
+        int step = (ModifierKeys & Keys.Shift) != 0 ? 5 : 1;
         if (GetMinusRect().Contains(e.Location) && _value > _min)
         {
-            _value--;
-            Invalidate();
-            ValueChanged?.Invoke(_value);
+            ApplyStep(-step);
         }
         else if (GetPlusRect().Contains(e.Location) && _value < _max)
         {
-            _value++;
+            ApplyStep(step);
+        }
+        else if (GetValueRect().Contains(e.Location))
+        {
+            BeginInlineEdit();
+        }
+    }
+
+    private void ApplyStep(int delta)
+    {
+        long candidate = (long)_value + delta;
+        int next = (int)Math.Clamp(candidate, _min, _max);
+        if (next != _value)
+        {
+            _value = next;
             Invalidate();
             ValueChanged?.Invoke(_value);
         }
+    }
+
+    private void BeginInlineEdit()
+    {
+        if (_inlineEditor is not null)
+        {
+            _inlineEditor.Focus();
+            _inlineEditor.SelectAll();
+            return;
+        }
+
+        RectangleF valRect = GetValueRect();
+        float s = DpiScale;
+        var editor = new TextBox
+        {
+            BorderStyle = BorderStyle.None,
+            BackColor = ModernTheme.SurfaceRecessed,
+            ForeColor = ModernTheme.AccentHoneyBright,
+            Font = new Font("Segoe UI", 9.25f, FontStyle.Bold, GraphicsUnit.Point),
+            TextAlign = HorizontalAlignment.Center,
+            Text = _value.ToString(),
+            Location = new Point((int)(valRect.X + 3 * s), (int)(valRect.Y + 6 * s)),
+            Size = new Size((int)Math.Max(20f, valRect.Width - 6 * s), (int)Math.Max(16f, valRect.Height - 10 * s)),
+            MaxLength = 5,
+        };
+
+        editor.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                CommitInlineEdit();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                CancelInlineEdit();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+            }
+        };
+        editor.KeyPress += (_, e) =>
+        {
+            if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar))
+            {
+                e.Handled = true;
+            }
+        };
+        editor.LostFocus += (_, _) => CommitInlineEdit();
+
+        _inlineEditor = editor;
+        Controls.Add(editor);
+        editor.Focus();
+        editor.SelectAll();
+    }
+
+    private void CommitInlineEdit()
+    {
+        if (_committingEdit || _inlineEditor is null)
+        {
+            return;
+        }
+
+        _committingEdit = true;
+        try
+        {
+            TextBox editor = _inlineEditor;
+            string raw = editor.Text.Trim();
+            _inlineEditor = null;
+            Controls.Remove(editor);
+            editor.Dispose();
+
+            if (int.TryParse(raw, out int parsed))
+            {
+                int next = Math.Clamp(parsed, _min, _max);
+                if (next != _value)
+                {
+                    _value = next;
+                    Invalidate();
+                    ValueChanged?.Invoke(_value);
+                }
+            }
+        }
+        finally
+        {
+            _committingEdit = false;
+        }
+    }
+
+    private void CancelInlineEdit()
+    {
+        if (_inlineEditor is null)
+        {
+            return;
+        }
+
+        TextBox editor = _inlineEditor;
+        _inlineEditor = null;
+        Controls.Remove(editor);
+        editor.Dispose();
+        Focus();
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -703,7 +838,9 @@ internal sealed class ModernStepperCard : Control
             g.FillPath(trackBrush, trackPath);
         }
 
-        float ratio = _max > _min ? (float)(_value - _min) / (_max - _min) : 1f;
+        float ratio = IsUncapped
+            ? (float)(Math.Log10(_value + 1.0) / Math.Log10(101.0))
+            : (_max > _min ? (float)(_value - _min) / (_max - _min) : 1f);
         float fillW = Math.Max(6f * scale, meterW * Math.Clamp(ratio, 0f, 1f));
         RectangleF meterFill = new(leftX, meterY, fillW, meterH);
         using (GraphicsPath fillPath = ModernTheme.CreateRoundedRect(meterFill, meterH * 0.5f))
@@ -718,9 +855,10 @@ internal sealed class ModernStepperCard : Control
         DrawStepButton(g, minusRect, isPlus: false, enabled: canDec, hovered: _hoveredPart == 1 && canDec);
         DrawStepButton(g, plusRect, isPlus: true, enabled: canInc, hovered: _hoveredPart == 2 && canInc);
 
+        bool pillHovered = _hoveredPart == 3;
         using (GraphicsPath valPath = ModernTheme.CreateRoundedRect(valRect, 7f))
-        using (SolidBrush valBg = new(ModernTheme.SurfaceRecessed))
-        using (Pen valBorder = new(ModernTheme.BorderSubtle, 1f))
+        using (SolidBrush valBg = new(pillHovered ? ModernTheme.SurfaceCardHover : ModernTheme.SurfaceRecessed))
+        using (Pen valBorder = new(pillHovered ? ModernTheme.AccentHoney : ModernTheme.BorderSubtle, 1f))
         {
             g.FillPath(valBg, valPath);
             g.DrawPath(valBorder, valPath);
@@ -732,6 +870,7 @@ internal sealed class ModernStepperCard : Control
         {
             Alignment = StringAlignment.Center,
             LineAlignment = StringAlignment.Center,
+            FormatFlags = StringFormatFlags.NoWrap,
         };
         string display = string.IsNullOrEmpty(_unitSuffix) ? $"{_value}" : $"{_value}{_unitSuffix}";
         g.DrawString(display, valFont, valTextBrush, valRect, sf);
@@ -964,6 +1103,7 @@ internal sealed class ModernOptionPicker : Control
             Renderer = new ModernMenuRenderer(),
             ShowImageMargin = false,
             ShowCheckMargin = true,
+            MaximumSize = new Size((int)(240 * DpiScale), (int)(360 * DpiScale)),
             Font = new Font("Segoe UI", 9f, FontStyle.Regular, GraphicsUnit.Point),
         };
 
@@ -1019,30 +1159,42 @@ internal sealed class ModernOptionPicker : Control
             ? _options[_selectedIndex]
             : (Key: "mix", Label: "All Breeds", Swatch: ModernTheme.AccentHoney);
 
-        // Coat swatch indicator dot(s) on left
-        float dotY = (Height - 8f) * 0.5f;
+        float s = DpiScale;
+        // Coat / theme swatch indicator dot(s) on left
+        float dotY = (Height - 8f * s) * 0.5f;
         if (string.Equals(current.Key, "mix", StringComparison.OrdinalIgnoreCase))
         {
             using SolidBrush b1 = new(Color.FromArgb(234, 198, 152));
             using SolidBrush b2 = new(Color.FromArgb(148, 160, 174));
             using SolidBrush b3 = new(Color.FromArgb(214, 134, 88));
-            g.FillEllipse(b1, 12f, dotY, 7f, 7f);
-            g.FillEllipse(b2, 17f, dotY, 7f, 7f);
-            g.FillEllipse(b3, 22f, dotY, 7f, 7f);
+            g.FillEllipse(b1, 12f * s, dotY, 7f * s, 7f * s);
+            g.FillEllipse(b2, 17f * s, dotY, 7f * s, 7f * s);
+            g.FillEllipse(b3, 22f * s, dotY, 7f * s, 7f * s);
         }
-        else
+        else if (current.Swatch != Color.Transparent)
         {
             using SolidBrush swatchBrush = new(current.Swatch);
             using Pen ringPen = new(Color.FromArgb(90, 255, 255, 255), 1f);
-            g.FillEllipse(swatchBrush, 12f, dotY - 0.5f, 9f, 9f);
-            g.DrawEllipse(ringPen, 12f, dotY - 0.5f, 9f, 9f);
+            g.FillEllipse(swatchBrush, 12f * s, dotY - 0.5f * s, 9f * s, 9f * s);
+            g.DrawEllipse(ringPen, 12f * s, dotY - 0.5f * s, 9f * s, 9f * s);
+        }
+        else
+        {
+            using Pen ringPen = new(ModernTheme.InkMuted, 1.2f);
+            g.DrawEllipse(ringPen, 12f * s, dotY - 0.5f * s, 9f * s, 9f * s);
         }
 
         using Font titleFont = new("Segoe UI", 9f, FontStyle.Bold, GraphicsUnit.Point);
         using SolidBrush titleBrush = new(ModernTheme.InkPrimary);
-        using StringFormat leftSf = new() { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
-        float labelX = string.Equals(current.Key, "mix", StringComparison.OrdinalIgnoreCase) ? 35f : 27f;
-        g.DrawString(_title, titleFont, titleBrush, new RectangleF(labelX, 0f, Width - 200f - labelX, Height), leftSf);
+        using StringFormat leftSf = new()
+        {
+            Alignment = StringAlignment.Near,
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap,
+        };
+        float labelX = string.Equals(current.Key, "mix", StringComparison.OrdinalIgnoreCase) ? 35f * s : 27f * s;
+        g.DrawString(_title, titleFont, titleBrush, new RectangleF(labelX, 0f, Math.Max(20f, Width - 200f * s - labelX), Height), leftSf);
 
         RectangleF prevRect = GetPrevRect();
         RectangleF pillRect = GetPillRect();
@@ -1283,21 +1435,23 @@ internal sealed class ModernActionChip : Control
 
         if (_glyph != ActionGlyph.None)
         {
+            float s = Math.Max(1f, DeviceDpi / 96f);
             SizeF textSize = g.MeasureString(_label, font);
-            float glyphSize = 13f;
-            float gap = 6f;
+            float glyphSize = 13f * s;
+            float gap = 5f * s;
             float totalW = glyphSize + gap + textSize.Width;
-            float startX = rect.X + Math.Max(10f, (rect.Width - totalW) * 0.5f);
+            float startX = rect.X + Math.Max(8f * s, (rect.Width - totalW) * 0.5f);
             float cy = rect.Y + rect.Height * 0.5f;
 
             Color glyphColor = (_active && _useCoralAccent) ? ModernTheme.AccentCoral : fg;
-            DrawGlyph(g, _glyph, startX + glyphSize * 0.5f, cy, glyphColor);
+            DrawGlyph(g, _glyph, startX + glyphSize * 0.5f, cy, glyphColor, s);
 
-            RectangleF textRect = new(startX + glyphSize + gap, rect.Y, Math.Max(20f, rect.Right - (startX + glyphSize + gap) - 6f), rect.Height);
+            RectangleF textRect = new(startX + glyphSize + gap, rect.Y, Math.Max(20f, rect.Right - (startX + glyphSize + gap) - 5f * s), rect.Height);
             using StringFormat nearSf = new()
             {
                 Alignment = StringAlignment.Near,
                 LineAlignment = StringAlignment.Center,
+                Trimming = StringTrimming.EllipsisCharacter,
                 FormatFlags = StringFormatFlags.NoWrap,
             };
             g.DrawString(_label, font, fgBrush, textRect, nearSf);
@@ -1313,7 +1467,7 @@ internal sealed class ModernActionChip : Control
         }
     }
 
-    private static void DrawGlyph(Graphics g, ActionGlyph glyph, float cx, float cy, Color color)
+    private static void DrawGlyph(Graphics g, ActionGlyph glyph, float cx, float cy, Color color, float s)
     {
         using Pen pen = new(color, 1.5f)
         {
@@ -1326,70 +1480,129 @@ internal sealed class ModernActionChip : Control
         switch (glyph)
         {
             case ActionGlyph.Laser:
-                g.DrawLine(pen, cx - 5f, cy + 4.5f, cx + 1.5f, cy - 2f);
-                g.FillEllipse(brush, cx + 1.8f, cy - 5.2f, 4.2f, 4.2f);
+                g.DrawLine(pen, cx - 5f * s, cy + 4.5f * s, cx + 1.5f * s, cy - 2f * s);
+                g.FillEllipse(brush, cx + 1.8f * s, cy - 5.2f * s, 4.2f * s, 4.2f * s);
                 break;
 
             case ActionGlyph.Yarn:
-                g.DrawEllipse(pen, cx - 5f, cy - 5f, 10f, 10f);
-                g.DrawArc(pen, cx - 4f, cy - 3.5f, 8f, 7f, 200, 150);
-                g.DrawLine(pen, cx + 2.5f, cy + 3.5f, cx + 6f, cy + 5.2f);
+                g.DrawEllipse(pen, cx - 5f * s, cy - 5f * s, 10f * s, 10f * s);
+                g.DrawArc(pen, cx - 4f * s, cy - 3.5f * s, 8f * s, 7f * s, 200, 150);
+                g.DrawLine(pen, cx + 2.5f * s, cy + 3.5f * s, cx + 6f * s, cy + 5.2f * s);
                 break;
 
             case ActionGlyph.Box:
-                g.DrawRectangle(pen, cx - 5f, cy - 2.5f, 10f, 7.5f);
-                g.DrawLine(pen, cx - 5f, cy - 2.5f, cx - 2.5f, cy - 5.5f);
-                g.DrawLine(pen, cx + 5f, cy - 2.5f, cx + 2.5f, cy - 5.5f);
-                g.DrawLine(pen, cx - 2.5f, cy - 5.5f, cx + 2.5f, cy - 5.5f);
+                g.DrawRectangle(pen, cx - 5f * s, cy - 2.5f * s, 10f * s, 7.5f * s);
+                g.DrawLine(pen, cx - 5f * s, cy - 2.5f * s, cx - 2.5f * s, cy - 5.5f * s);
+                g.DrawLine(pen, cx + 5f * s, cy - 2.5f * s, cx + 2.5f * s, cy - 5.5f * s);
+                g.DrawLine(pen, cx - 2.5f * s, cy - 5.5f * s, cx + 2.5f * s, cy - 5.5f * s);
                 break;
 
             case ActionGlyph.Treat:
-                // Minimal fish/treat silhouette
-                g.DrawEllipse(pen, cx - 5f, cy - 3.2f, 7.5f, 6.4f);
+                // Minimal treat / star kibble nugget
+                g.FillEllipse(brush, cx - 3.8f * s, cy - 2.4f * s, 3.6f * s, 4.8f * s);
+                g.FillEllipse(brush, cx + 0.2f * s, cy - 2.4f * s, 3.6f * s, 4.8f * s);
+                g.DrawEllipse(pen, cx - 4.8f * s, cy - 3.4f * s, 9.6f * s, 6.8f * s);
+                break;
+
+            case ActionGlyph.Mouse:
+                // Plush mouse toy silhouette with curved tail
+                g.DrawEllipse(pen, cx - 4.8f * s, cy - 2.8f * s, 7.2f * s, 5.6f * s);
+                g.DrawEllipse(pen, cx - 4.5f * s, cy - 4.6f * s, 3f * s, 3f * s);
+                g.DrawArc(pen, cx + 1.5f * s, cy - 2f * s, 4.2f * s, 4.5f * s, 260, 180);
+                break;
+
+            case ActionGlyph.Fish:
+                // Minimal fish silhouette
+                g.DrawEllipse(pen, cx - 5f * s, cy - 3.2f * s, 7.5f * s, 6.4f * s);
                 g.DrawLines(pen, [
-                    new PointF(cx + 2.5f, cy),
-                    new PointF(cx + 5.5f, cy - 3f),
-                    new PointF(cx + 5.5f, cy + 3f),
-                    new PointF(cx + 2.5f, cy),
+                    new PointF(cx + 2.5f * s, cy),
+                    new PointF(cx + 5.5f * s, cy - 3f * s),
+                    new PointF(cx + 5.5f * s, cy + 3f * s),
+                    new PointF(cx + 2.5f * s, cy),
                 ]);
                 break;
 
+            case ActionGlyph.SoundOn:
+                g.DrawPolygon(pen, [
+                    new PointF(cx - 5f * s, cy - 2f * s),
+                    new PointF(cx - 2.5f * s, cy - 2f * s),
+                    new PointF(cx + 0.5f * s, cy - 4.5f * s),
+                    new PointF(cx + 0.5f * s, cy + 4.5f * s),
+                    new PointF(cx - 2.5f * s, cy + 2f * s),
+                    new PointF(cx - 5f * s, cy + 2f * s),
+                ]);
+                g.DrawArc(pen, cx + 1.5f * s, cy - 3.2f * s, 3.8f * s, 6.4f * s, -60, 120);
+                break;
+
+            case ActionGlyph.SoundOff:
+                g.DrawPolygon(pen, [
+                    new PointF(cx - 5f * s, cy - 2f * s),
+                    new PointF(cx - 2.5f * s, cy - 2f * s),
+                    new PointF(cx + 0.5f * s, cy - 4.5f * s),
+                    new PointF(cx + 0.5f * s, cy + 4.5f * s),
+                    new PointF(cx - 2.5f * s, cy + 2f * s),
+                    new PointF(cx - 5f * s, cy + 2f * s),
+                ]);
+                g.DrawLine(pen, cx + 2.5f * s, cy - 2.2f * s, cx + 5.5f * s, cy + 2.2f * s);
+                g.DrawLine(pen, cx + 5.5f * s, cy - 2.2f * s, cx + 2.5f * s, cy + 2.2f * s);
+                break;
+
+            case ActionGlyph.Kitten:
+                // Small cat ear outline
+                g.DrawLines(pen, [
+                    new PointF(cx - 4.8f * s, cy + 3.8f * s),
+                    new PointF(cx - 4.4f * s, cy - 4.2f * s),
+                    new PointF(cx - 1.5f * s, cy - 1.4f * s),
+                    new PointF(cx + 1.5f * s, cy - 1.4f * s),
+                    new PointF(cx + 4.4f * s, cy - 4.2f * s),
+                    new PointF(cx + 4.8f * s, cy + 3.8f * s),
+                    new PointF(cx, cy + 5f * s),
+                    new PointF(cx - 4.8f * s, cy + 3.8f * s),
+                ]);
+                break;
+
+            case ActionGlyph.Camera:
+                g.DrawRectangle(pen, cx - 5.2f * s, cy - 3.2f * s, 10.4f * s, 7.2f * s);
+                g.DrawEllipse(pen, cx - 2.2f * s, cy - 1.8f * s, 4.4f * s, 4.4f * s);
+                g.DrawLine(pen, cx - 2.2f * s, cy - 4.6f * s, cx + 2.2f * s, cy - 4.6f * s);
+                break;
+
             case ActionGlyph.Pause:
-                g.DrawLine(pen, cx - 2.3f, cy - 4.2f, cx - 2.3f, cy + 4.2f);
-                g.DrawLine(pen, cx + 2.3f, cy - 4.2f, cx + 2.3f, cy + 4.2f);
+                g.DrawLine(pen, cx - 2.3f * s, cy - 4.2f * s, cx - 2.3f * s, cy + 4.2f * s);
+                g.DrawLine(pen, cx + 2.3f * s, cy - 4.2f * s, cx + 2.3f * s, cy + 4.2f * s);
                 break;
 
             case ActionGlyph.Play:
                 g.FillPolygon(brush, [
-                    new PointF(cx - 2.8f, cy - 4.5f),
-                    new PointF(cx + 4.5f, cy),
-                    new PointF(cx - 2.8f, cy + 4.5f),
+                    new PointF(cx - 2.8f * s, cy - 4.5f * s),
+                    new PointF(cx + 4.5f * s, cy),
+                    new PointF(cx - 2.8f * s, cy + 4.5f * s),
                 ]);
                 break;
 
             case ActionGlyph.Window:
-                g.DrawRectangle(pen, cx - 5.2f, cy - 4.2f, 10.4f, 8.4f);
-                g.DrawLine(pen, cx - 5.2f, cy - 1.5f, cx + 5.2f, cy - 1.5f);
+                g.DrawRectangle(pen, cx - 5.2f * s, cy - 4.2f * s, 10.4f * s, 8.4f * s);
+                g.DrawLine(pen, cx - 5.2f * s, cy - 1.5f * s, cx + 5.2f * s, cy - 1.5f * s);
                 break;
 
             case ActionGlyph.Wallpaper:
-                g.DrawRectangle(pen, cx - 5.5f, cy - 4.5f, 11f, 7.5f);
-                g.DrawLine(pen, cx - 2.5f, cy + 5f, cx + 2.5f, cy + 5f);
+                g.DrawRectangle(pen, cx - 5.5f * s, cy - 4.5f * s, 11f * s, 7.5f * s);
+                g.DrawLine(pen, cx - 2.5f * s, cy + 5f * s, cx + 2.5f * s, cy + 5f * s);
                 break;
 
             case ActionGlyph.Settings:
-                g.DrawLine(pen, cx - 5f, cy - 2.6f, cx + 5f, cy - 2.6f);
-                g.DrawLine(pen, cx - 5f, cy + 2.6f, cx + 5f, cy + 2.6f);
-                g.FillEllipse(brush, cx - 3.2f, cy - 4.4f, 3.6f, 3.6f);
-                g.FillEllipse(brush, cx + 0.4f, cy + 0.8f, 3.6f, 3.6f);
+                g.DrawLine(pen, cx - 5f * s, cy - 2.6f * s, cx + 5f * s, cy - 2.6f * s);
+                g.DrawLine(pen, cx - 5f * s, cy + 2.6f * s, cx + 5f * s, cy + 2.6f * s);
+                g.FillEllipse(brush, cx - 3.2f * s, cy - 4.4f * s, 3.6f * s, 3.6f * s);
+                g.FillEllipse(brush, cx + 0.4f * s, cy + 0.8f * s, 3.6f * s, 3.6f * s);
                 break;
 
             case ActionGlyph.Refresh:
-                g.DrawArc(pen, cx - 4.6f, cy - 4.6f, 9.2f, 9.2f, 40, 280);
+                g.DrawArc(pen, cx - 4.6f * s, cy - 4.6f * s, 9.2f * s, 9.2f * s, 40, 280);
                 g.DrawLines(pen, [
-                    new PointF(cx + 2.2f, cy - 5.2f),
-                    new PointF(cx + 4.8f, cy - 2.6f),
-                    new PointF(cx + 1.6f, cy - 2.0f),
+                    new PointF(cx + 2.2f * s, cy - 5.2f * s),
+                    new PointF(cx + 4.8f * s, cy - 2.6f * s),
+                    new PointF(cx + 1.6f * s, cy - 2.0f * s),
                 ]);
                 break;
         }

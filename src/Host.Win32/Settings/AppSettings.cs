@@ -8,8 +8,14 @@ namespace NekoScape.Host.Settings;
 
 public sealed record BreedModeOption(string Key, string Label, string ShortLabel);
 
+public sealed record SceneThemeOption(string Key, string Label, string Subtitle);
+
+public sealed record CollarColorOption(string Key, string Label, string? HexColor);
+
 public sealed class NekoSettings
 {
+    public const int MinCatCount = 1;
+
     private static readonly Regex SeparatorRegex = new(@"[\s-]+", RegexOptions.Compiled);
 
     public static readonly IReadOnlyList<BreedModeOption> BreedModeOptions =
@@ -21,6 +27,40 @@ public sealed class NekoSettings
         new("munchkin", "Munchkin", "Munchkin"),
         new("sphynx", "Sphynx", "Sphynx"),
         new("domestic_shorthair", "Domestic Shorthair", "Domestic"),
+        new("maine_coon", "Maine Coon", "Maine Coon"),
+        new("scottish_fold", "Scottish Fold", "Scottish Fold"),
+        new("bengal", "Bengal", "Bengal"),
+        new("ragdoll", "Ragdoll", "Ragdoll"),
+        new("russian_blue", "Russian Blue", "Russian Blue"),
+        new("abyssinian", "Abyssinian", "Abyssinian"),
+        new("american_curl", "American Curl", "American Curl"),
+        new("japanese_bobtail", "Japanese Bobtail", "Bobtail"),
+    ];
+
+    public static readonly IReadOnlyList<SceneThemeOption> SceneThemeOptions =
+    [
+        new("study", "Golden Study", "Oak, Monstera & Books"),
+        new("tatami", "Kyoto Tatami", "Bonsai, Tea & Lantern"),
+        new("garden", "Sunlit Garden", "Koi Pond & Clover"),
+        new("cafe", "Cat Cafe", "Bistro & Cat Tower"),
+        new("living_room", "Living Room", "Fireplace, Sofa & Laptop"),
+        new("rainy_window", "Rainy Window", "Raindrops & Sill Perch"),
+        new("night_balcony", "Night Balcony", "City Bokeh & Moths"),
+        new("kitchen", "Sunny Kitchen", "Fridge Lookout & Fountain"),
+        new("bedroom", "Cozy Bedroom", "Blanket Lump & Litter Box"),
+        new("snowy_window", "Snowy Window", "Snowfall & Warm Radiator"),
+        new("sunbeam", "Sunbeam Studio", "Drifting Sunbeam & Tape"),
+        new("aquarium", "Aquarium Fort", "Tabletop Tank & Tunnel"),
+        new("rooftop", "Sunset Rooftop", "String Lights & Parapet"),
+    ];
+
+    public static readonly IReadOnlyList<CollarColorOption> CollarColorOptions =
+    [
+        new("none", "None", null),
+        new("crimson", "Crimson", "#d94f5c"),
+        new("teal", "Teal", "#2fa69a"),
+        new("gold", "Gold", "#e2a93b"),
+        new("lavender", "Lavender", "#8b74d6"),
     ];
 
     public int CatCount { get; set; } = 6;
@@ -36,6 +76,11 @@ public sealed class NekoSettings
     public string SceneTheme { get; set; } = "study";
     public string BreedMode { get; set; } = "mix";
     public bool ShowSceneProps { get; set; } = true;
+    public bool KittenMode { get; set; } = false;
+    public string? CollarColor { get; set; } = null;
+    public bool CollarBell { get; set; } = true;
+    public bool SoundEnabled { get; set; } = false;
+    public double SoundVolume { get; set; } = 0.45;
 
     public NekoSettings Clone() => new()
     {
@@ -51,13 +96,18 @@ public sealed class NekoSettings
         LightingMode = LightingMode,
         SceneTheme = SceneTheme,
         BreedMode = BreedMode,
-        ShowSceneProps = ShowSceneProps
+        ShowSceneProps = ShowSceneProps,
+        KittenMode = KittenMode,
+        CollarColor = CollarColor,
+        CollarBell = CollarBell,
+        SoundEnabled = SoundEnabled,
+        SoundVolume = SoundVolume,
     };
 
     public NekoSettings Normalized()
     {
         var copy = Clone();
-        copy.CatCount = Math.Clamp(copy.CatCount, 1, 12);
+        copy.CatCount = Math.Max(MinCatCount, copy.CatCount);
         copy.FpsCap = copy.FpsCap switch
         {
             <= 0 => 0,
@@ -69,6 +119,10 @@ public sealed class NekoSettings
         copy.LightingMode = NormalizeLightingMode(copy.LightingMode);
         copy.SceneTheme = NormalizeSceneTheme(copy.SceneTheme);
         copy.BreedMode = NormalizeBreedMode(copy.BreedMode);
+        copy.CollarColor = NormalizeCollarColor(copy.CollarColor);
+        copy.SoundVolume = double.IsFinite(copy.SoundVolume)
+            ? Math.Clamp(Math.Round(copy.SoundVolume, 2), 0.0, 1.0)
+            : 0.45;
         return copy;
     }
 
@@ -80,13 +134,53 @@ public sealed class NekoSettings
         _ => "golden"
     };
 
-    public static string NormalizeSceneTheme(string? theme) => theme?.Trim().ToLowerInvariant() switch
+    public static string NormalizeSceneTheme(string? theme)
     {
-        "tatami" => "tatami",
-        "garden" => "garden",
-        "cafe" => "cafe",
-        _ => "study"
-    };
+        if (string.IsNullOrWhiteSpace(theme))
+        {
+            return "study";
+        }
+
+        string key = SeparatorRegex.Replace(theme.Trim().ToLowerInvariant(), "_");
+        foreach (SceneThemeOption option in SceneThemeOptions)
+        {
+            if (string.Equals(option.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                return option.Key;
+            }
+        }
+
+        return "study";
+    }
+
+    public static string GetSceneThemeLabel(string? theme)
+    {
+        string normalized = NormalizeSceneTheme(theme);
+        foreach (SceneThemeOption option in SceneThemeOptions)
+        {
+            if (string.Equals(option.Key, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                return option.Label;
+            }
+        }
+        return "Golden Study";
+    }
+
+    public static string? NormalizeCollarColor(string? color)
+    {
+        if (string.IsNullOrWhiteSpace(color))
+        {
+            return null;
+        }
+
+        string trimmed = color.Trim();
+        if (string.Equals(trimmed, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return trimmed.ToLowerInvariant();
+    }
 
     public static string NormalizeBreedMode(string? mode)
     {
@@ -105,6 +199,14 @@ public sealed class NekoSettings
             "munchkin" or "tuxedo" => "munchkin",
             "sphynx" => "sphynx",
             "domestic_shorthair" or "black" or "orange_tabby" or "tabby" or "dsh" => "domestic_shorthair",
+            "maine_coon" or "maine" or "mainecoon" => "maine_coon",
+            "scottish_fold" or "scottish" or "fold" or "scottishfold" => "scottish_fold",
+            "bengal" => "bengal",
+            "ragdoll" => "ragdoll",
+            "russian_blue" or "russian" or "russianblue" => "russian_blue",
+            "abyssinian" or "aby" => "abyssinian",
+            "american_curl" or "curl" or "americancurl" => "american_curl",
+            "japanese_bobtail" or "bobtail" or "mike" or "japanesebobtail" => "japanese_bobtail",
             _ => "mix"
         };
     }
@@ -138,6 +240,13 @@ public sealed class NekoSettingsPatch
     public string? SceneTheme { get; set; }
     public string? BreedMode { get; set; }
     public bool? ShowSceneProps { get; set; }
+    public bool? KittenMode { get; set; }
+    public string? CollarColor { get; set; }
+    [JsonIgnore]
+    public bool ClearCollarColor { get; set; }
+    public bool? CollarBell { get; set; }
+    public bool? SoundEnabled { get; set; }
+    public double? SoundVolume { get; set; }
 
     public NekoSettings ApplyTo(NekoSettings current)
     {
@@ -155,6 +264,18 @@ public sealed class NekoSettingsPatch
         if (SceneTheme is not null) updated.SceneTheme = SceneTheme;
         if (BreedMode is not null) updated.BreedMode = BreedMode;
         if (ShowSceneProps.HasValue) updated.ShowSceneProps = ShowSceneProps.Value;
+        if (KittenMode.HasValue) updated.KittenMode = KittenMode.Value;
+        if (CollarColor is not null)
+        {
+            updated.CollarColor = CollarColor;
+        }
+        else if (ClearCollarColor)
+        {
+            updated.CollarColor = null;
+        }
+        if (CollarBell.HasValue) updated.CollarBell = CollarBell.Value;
+        if (SoundEnabled.HasValue) updated.SoundEnabled = SoundEnabled.Value;
+        if (SoundVolume.HasValue) updated.SoundVolume = SoundVolume.Value;
         return updated.Normalized();
     }
 }
@@ -261,6 +382,10 @@ public sealed class AppSettingsStore
                     if (kvp.Value is not null)
                     {
                         merged[kvp.Key] = kvp.Value.DeepClone();
+                    }
+                    else if (string.Equals(kvp.Key, "collarColor", StringComparison.OrdinalIgnoreCase))
+                    {
+                        merged[kvp.Key] = null;
                     }
                 }
             }

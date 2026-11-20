@@ -159,6 +159,15 @@ public sealed class IpcProtocolTests
     [InlineData("tatami")]
     [InlineData("garden")]
     [InlineData("cafe")]
+    [InlineData("living_room")]
+    [InlineData("rainy_window")]
+    [InlineData("night_balcony")]
+    [InlineData("kitchen")]
+    [InlineData("bedroom")]
+    [InlineData("snowy_window")]
+    [InlineData("sunbeam")]
+    [InlineData("aquarium")]
+    [InlineData("rooftop")]
     public void SettingsUpdate_SceneTheme_SerializesCamelCaseAndRoundTrips(string sceneTheme)
     {
         var defaultMsg = new SettingsUpdateMessage(new NekoSettings());
@@ -221,44 +230,160 @@ public sealed class IpcProtocolTests
     }
 
     [Fact]
-    public void SettingsChanged_RendererToHostMessage_DeserializesPartialPatch()
+    public void SettingsChanged_RendererToHostMessage_DeserializesPartialPatch_AndExplicitNullCollar()
     {
-        string json = """{"type":"SETTINGS_CHANGED","settings":{"sceneTheme":"garden","breedMode":"sphynx","showSceneProps":false,"catCount":4}}""";
+        string json = """{"type":"SETTINGS_CHANGED","settings":{"sceneTheme":"garden","breedMode":"sphynx","showSceneProps":false,"catCount":45,"kittenMode":true,"collarColor":null,"soundEnabled":true,"soundVolume":0.65}}""";
         var msg = Assert.IsType<SettingsChangedMessage>(IpcChannel.DeserializeRendererMessage(json));
         Assert.NotNull(msg.Settings);
         Assert.Equal("garden", msg.Settings.SceneTheme);
         Assert.Equal("sphynx", msg.Settings.BreedMode);
         Assert.False(msg.Settings.ShowSceneProps);
-        Assert.Equal(4, msg.Settings.CatCount);
+        Assert.Equal(45, msg.Settings.CatCount);
+        Assert.True(msg.Settings.KittenMode);
+        Assert.True(msg.Settings.ClearCollarColor);
+        Assert.True(msg.Settings.SoundEnabled);
+        Assert.Equal(0.65, msg.Settings.SoundVolume);
         Assert.Null(msg.Settings.FpsCap);
 
-        NekoSettings applied = msg.Settings.ApplyTo(new NekoSettings());
+        NekoSettings baseline = new() { CollarColor = "#d94f5c" };
+        NekoSettings applied = msg.Settings.ApplyTo(baseline);
         Assert.Equal("garden", applied.SceneTheme);
         Assert.Equal("sphynx", applied.BreedMode);
         Assert.False(applied.ShowSceneProps);
-        Assert.Equal(4, applied.CatCount);
+        Assert.Equal(45, applied.CatCount);
         Assert.Equal(60, applied.FpsCap);
+        Assert.True(applied.KittenMode);
+        Assert.Null(applied.CollarColor);
+        Assert.True(applied.SoundEnabled);
+        Assert.Equal(0.65, applied.SoundVolume);
+
+        // When collarColor is omitted from patch, existing collarColor is preserved
+        string preserveJson = """{"type":"SETTINGS_CHANGED","settings":{"catCount":25}}""";
+        var preserveMsg = Assert.IsType<SettingsChangedMessage>(IpcChannel.DeserializeRendererMessage(preserveJson));
+        Assert.False(preserveMsg.Settings.ClearCollarColor);
+        Assert.Equal("#d94f5c", preserveMsg.Settings.ApplyTo(baseline).CollarColor);
     }
 
     [Fact]
-    public void SettingsUpdate_IncludesBreedModeShowScenePropsAndShowHud()
+    public void SettingsUpdate_IncludesV2FieldsAndUncappedCatCount()
     {
         var msg = new SettingsUpdateMessage(new NekoSettings
         {
+            CatCount = 42,
             BreedMode = "munchkin",
             ShowSceneProps = false,
             ShowHud = false,
+            KittenMode = true,
+            CollarColor = "#e2a93b",
+            CollarBell = false,
+            SoundEnabled = true,
+            SoundVolume = 0.75,
         });
         string json = IpcChannel.SerializeHostMessage(msg);
         using JsonDocument doc = JsonDocument.Parse(json);
         JsonElement s = doc.RootElement.GetProperty("settings");
+        Assert.Equal(42, s.GetProperty("catCount").GetInt32());
         Assert.Equal("munchkin", s.GetProperty("breedMode").GetString());
         Assert.False(s.GetProperty("showSceneProps").GetBoolean());
         Assert.False(s.GetProperty("showHud").GetBoolean());
+        Assert.True(s.GetProperty("kittenMode").GetBoolean());
+        Assert.Equal("#e2a93b", s.GetProperty("collarColor").GetString());
+        Assert.False(s.GetProperty("collarBell").GetBoolean());
+        Assert.True(s.GetProperty("soundEnabled").GetBoolean());
+        Assert.Equal(0.75, s.GetProperty("soundVolume").GetDouble());
 
         var roundTrip = Assert.IsType<SettingsUpdateMessage>(IpcChannel.DeserializeHostMessage(json));
+        Assert.Equal(42, roundTrip.Settings.CatCount);
         Assert.Equal("munchkin", roundTrip.Settings.BreedMode);
         Assert.False(roundTrip.Settings.ShowSceneProps);
         Assert.False(roundTrip.Settings.ShowHud);
+        Assert.True(roundTrip.Settings.KittenMode);
+        Assert.Equal("#e2a93b", roundTrip.Settings.CollarColor);
+        Assert.False(roundTrip.Settings.CollarBell);
+        Assert.True(roundTrip.Settings.SoundEnabled);
+        Assert.Equal(0.75, roundTrip.Settings.SoundVolume);
+    }
+
+    [Theory]
+    [InlineData(SpawnActions.DropMouse, "dropMouse")]
+    [InlineData(SpawnActions.DropFish, "dropFish")]
+    [InlineData(SpawnActions.DropFeather, "dropFeather")]
+    [InlineData(SpawnActions.DropCrinkle, "dropCrinkle")]
+    [InlineData(SpawnActions.DropSpring, "dropSpring")]
+    [InlineData(SpawnActions.DropPingPong, "dropPingPong")]
+    [InlineData(SpawnActions.DropHairTie, "dropHairTie")]
+    [InlineData(SpawnActions.DropBubbles, "dropBubbles")]
+    [InlineData(SpawnActions.DropCucumber, "dropCucumber")]
+    [InlineData(SpawnActions.TogglePaperBag, "togglePaperBag")]
+    [InlineData(SpawnActions.ToggleTapedSquare, "toggleTapedSquare")]
+    [InlineData(SpawnActions.ClearToys, "clearToys")]
+    [InlineData(SpawnActions.PhotoSnapshot, "photoSnapshot")]
+    public void SpawnActions_V2ToysAndPhoto_SerializeAndRoundTrip(string actionConst, string expectedValue)
+    {
+        Assert.Equal(expectedValue, actionConst);
+        var msg = new SpawnActionMessage(actionConst);
+        string json = IpcChannel.SerializeHostMessage(msg);
+        using JsonDocument doc = JsonDocument.Parse(json);
+        Assert.Equal("SPAWN_ACTION", doc.RootElement.GetProperty("type").GetString());
+        Assert.Equal(expectedValue, doc.RootElement.GetProperty("action").GetString());
+
+        var roundTrip = Assert.IsType<SpawnActionMessage>(IpcChannel.DeserializeHostMessage(json));
+        Assert.Equal(expectedValue, roundTrip.Action);
+    }
+
+    [Fact]
+    public void WindowLedgesUpdate_SerializesCamelCaseAndRoundTrips()
+    {
+        var msg = new WindowLedgesMessage(
+            TaskbarRect: new DesktopIconRect(-1, 0, 1032, 1920, 48, "Taskbar"),
+            WindowTopLedges:
+            [
+                new DesktopIconRect(1, 120, 80, 960, 12, "Visual Studio Code"),
+                new DesktopIconRect(2, 1100, 140, 720, 12, "Windows Terminal"),
+            ]);
+
+        string json = IpcChannel.SerializeHostMessage(msg);
+        using (JsonDocument doc = JsonDocument.Parse(json))
+        {
+            JsonElement root = doc.RootElement;
+            Assert.Equal("WINDOW_LEDGES_UPDATE", root.GetProperty("type").GetString());
+            Assert.Equal(1032, root.GetProperty("taskbarRect").GetProperty("y").GetDouble());
+            Assert.Equal("Taskbar", root.GetProperty("taskbarRect").GetProperty("label").GetString());
+            Assert.Equal(2, root.GetProperty("windowTopLedges").GetArrayLength());
+            Assert.Equal("Visual Studio Code", root.GetProperty("windowTopLedges")[0].GetProperty("label").GetString());
+        }
+
+        var roundTrip = Assert.IsType<WindowLedgesMessage>(IpcChannel.DeserializeHostMessage(json));
+        Assert.NotNull(roundTrip.TaskbarRect);
+        Assert.Equal(48, roundTrip.TaskbarRect!.Height);
+        Assert.Equal(2, roundTrip.WindowTopLedges.Count);
+        Assert.Equal("Windows Terminal", roundTrip.WindowTopLedges[1].Label);
+
+        var hiddenTaskbar = new WindowLedgesMessage(null, Array.Empty<DesktopIconRect>());
+        string hiddenJson = IpcChannel.SerializeHostMessage(hiddenTaskbar);
+        using (JsonDocument hiddenDoc = JsonDocument.Parse(hiddenJson))
+        {
+            Assert.Equal(JsonValueKind.Null, hiddenDoc.RootElement.GetProperty("taskbarRect").ValueKind);
+            Assert.Equal(0, hiddenDoc.RootElement.GetProperty("windowTopLedges").GetArrayLength());
+        }
+    }
+
+    [Fact]
+    public void AudioActivity_SerializesAndOmitsNullSourceX()
+    {
+        var withoutX = new AudioActivityMessage(0.62);
+        string jsonWithout = IpcChannel.SerializeHostMessage(withoutX);
+        using (JsonDocument doc = JsonDocument.Parse(jsonWithout))
+        {
+            Assert.Equal("AUDIO_ACTIVITY", doc.RootElement.GetProperty("type").GetString());
+            Assert.Equal(0.62, doc.RootElement.GetProperty("level").GetDouble(), precision: 2);
+            Assert.False(doc.RootElement.TryGetProperty("sourceX", out _));
+        }
+
+        var withX = new AudioActivityMessage(0.85, SourceX: 640.5);
+        string jsonWith = IpcChannel.SerializeHostMessage(withX);
+        var roundTrip = Assert.IsType<AudioActivityMessage>(IpcChannel.DeserializeHostMessage(jsonWith));
+        Assert.Equal(0.85, roundTrip.Level, precision: 2);
+        Assert.Equal(640.5, roundTrip.SourceX);
     }
 }

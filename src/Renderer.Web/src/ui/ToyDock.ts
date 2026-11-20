@@ -1,25 +1,42 @@
-import type {
-  CatBreedMode,
-  LightingMode,
-  SceneTheme,
-  ToyDockCallbacks,
-  ToyDockState,
+import {
+  COLLAR_COLOR_PRESETS,
+  MIN_CAT_COUNT,
+  SCENE_THEME_LABELS,
+  normalizeCatCount,
+  type CatBreedMode,
+  type LightingMode,
+  type SceneTheme,
+  type ToyDockCallbacks,
+  type ToyDockState,
+  type ToyKind,
 } from '../types/simulation';
 
 export type { ToyDockCallbacks, ToyDockState } from '../types/simulation';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const POPOVER_CLOSE_MS = 190;
+const LIGHTWEIGHT_THRESHOLD = 35;
+
+type DockTabId = 'cats' | 'play' | 'world';
 
 const SCENE_OPTIONS: readonly {
   theme: SceneTheme;
   label: string;
   ariaLabel: string;
 }[] = [
-  { theme: 'study', label: 'Study', ariaLabel: 'Switch scene to Study' },
-  { theme: 'tatami', label: 'Tatami', ariaLabel: 'Switch scene to Tatami' },
-  { theme: 'garden', label: 'Garden', ariaLabel: 'Switch scene to Garden' },
-  { theme: 'cafe', label: 'Cafe', ariaLabel: 'Switch scene to Cafe' },
+  { theme: 'study', label: 'Golden Study', ariaLabel: `Switch scene to ${SCENE_THEME_LABELS.study}` },
+  { theme: 'tatami', label: 'Kyoto Tatami', ariaLabel: `Switch scene to ${SCENE_THEME_LABELS.tatami}` },
+  { theme: 'garden', label: 'Sunlit Garden', ariaLabel: `Switch scene to ${SCENE_THEME_LABELS.garden}` },
+  { theme: 'cafe', label: 'Cat Cafe', ariaLabel: `Switch scene to ${SCENE_THEME_LABELS.cafe}` },
+  { theme: 'living_room', label: 'Living Room', ariaLabel: `Switch scene to ${SCENE_THEME_LABELS.living_room}` },
+  { theme: 'rainy_window', label: 'Rainy Window', ariaLabel: `Switch scene to ${SCENE_THEME_LABELS.rainy_window}` },
+  { theme: 'night_balcony', label: 'Night Balcony', ariaLabel: `Switch scene to ${SCENE_THEME_LABELS.night_balcony}` },
+  { theme: 'kitchen', label: 'Kitchen', ariaLabel: `Switch scene to ${SCENE_THEME_LABELS.kitchen}` },
+  { theme: 'bedroom', label: 'Bedroom', ariaLabel: `Switch scene to ${SCENE_THEME_LABELS.bedroom}` },
+  { theme: 'snowy_window', label: 'Snowy Window', ariaLabel: `Switch scene to ${SCENE_THEME_LABELS.snowy_window}` },
+  { theme: 'sunbeam', label: 'Sunbeam', ariaLabel: `Switch scene to ${SCENE_THEME_LABELS.sunbeam}` },
+  { theme: 'aquarium', label: 'Aquarium', ariaLabel: `Switch scene to ${SCENE_THEME_LABELS.aquarium}` },
+  { theme: 'rooftop', label: 'Rooftop', ariaLabel: `Switch scene to ${SCENE_THEME_LABELS.rooftop}` },
 ];
 
 const LIGHTING_OPTIONS: readonly {
@@ -74,17 +91,71 @@ const BREED_OPTIONS: readonly {
   mode: CatBreedMode;
   label: string;
   fullLabel: string;
+  swatch: string;
 }[] = [
-  { mode: 'mix', label: 'Mix', fullLabel: 'Mix of all 6 breeds' },
-  { mode: 'persian', label: 'Persian', fullLabel: 'Persian' },
-  { mode: 'siamese', label: 'Siamese', fullLabel: 'Siamese' },
-  { mode: 'british_shorthair', label: 'British', fullLabel: 'British Shorthair' },
-  { mode: 'munchkin', label: 'Munchkin', fullLabel: 'Munchkin' },
-  { mode: 'sphynx', label: 'Sphynx', fullLabel: 'Sphynx' },
-  { mode: 'domestic_shorthair', label: 'Domestic', fullLabel: 'Domestic Shorthair' },
+  { mode: 'mix', label: 'Mix', fullLabel: 'Mix of all 14 breeds', swatch: '#e5a45c' },
+  { mode: 'persian', label: 'Persian', fullLabel: 'Persian', swatch: '#e8d8c6' },
+  { mode: 'siamese', label: 'Siamese', fullLabel: 'Siamese', swatch: '#c9b296' },
+  { mode: 'british_shorthair', label: 'British Shorthair', fullLabel: 'British Shorthair', swatch: '#7e8e9d' },
+  { mode: 'munchkin', label: 'Munchkin', fullLabel: 'Munchkin', swatch: '#d69766' },
+  { mode: 'sphynx', label: 'Sphynx', fullLabel: 'Sphynx', swatch: '#d8b0a6' },
+  { mode: 'domestic_shorthair', label: 'Domestic Shorthair', fullLabel: 'Domestic Shorthair', swatch: '#cf8246' },
+  { mode: 'maine_coon', label: 'Maine Coon', fullLabel: 'Maine Coon', swatch: '#9c7150' },
+  { mode: 'scottish_fold', label: 'Scottish Fold', fullLabel: 'Scottish Fold', swatch: '#b5ada5' },
+  { mode: 'bengal', label: 'Bengal', fullLabel: 'Bengal', swatch: '#d49a4c' },
+  { mode: 'ragdoll', label: 'Ragdoll', fullLabel: 'Ragdoll', swatch: '#ebe4da' },
+  { mode: 'russian_blue', label: 'Russian Blue', fullLabel: 'Russian Blue', swatch: '#6d8299' },
+  { mode: 'abyssinian', label: 'Abyssinian', fullLabel: 'Abyssinian', swatch: '#c47141' },
+  { mode: 'american_curl', label: 'American Curl', fullLabel: 'American Curl', swatch: '#c9a68a' },
+  { mode: 'japanese_bobtail', label: 'Japanese Bobtail', fullLabel: 'Japanese Bobtail', swatch: '#e39652' },
 ];
 
 const ICONS = {
+  soundOn: [
+    'M3.6 8.2h2.7l3.7-3v9.6l-3.7-3H3.6V8.2Z',
+    'M13 7.2a4.3 4.3 0 0 1 0 5.6',
+    'M15.3 5a7.2 7.2 0 0 1 0 10',
+  ],
+  soundOff: [
+    'M3.6 8.2h2.7l3.7-3v9.6l-3.7-3H3.6V8.2Z',
+    'M13.2 7.8l4 4.4',
+    'M17.2 7.8l-4 4.4',
+  ],
+  camera: [
+    'M3.4 7.2a1.6 1.6 0 0 1 1.6-1.6h1.7l1.1-1.6h4.4l1.1 1.6H15a1.6 1.6 0 0 1 1.6 1.6v7.6a1.6 1.6 0 0 1-1.6 1.6H5a1.6 1.6 0 0 1-1.6-1.6V7.2Z',
+    'M10 8.3a2.7 2.7 0 1 0 0 5.4 2.7 2.7 0 1 0 0-5.4Z',
+  ],
+  close: ['M5.6 5.6l8.8 8.8', 'M14.4 5.6l-8.8 8.8'],
+  minus: ['M5.5 10h9'],
+  plus: ['M10 5.5v9', 'M5.5 10h9'],
+  kitten: [
+    'M5.2 13.5V8l2.4 1.8a5.4 5.4 0 0 1 4.8 0L14.8 8v5.5c0 1.6-2.1 2.8-4.8 2.8s-4.8-1.2-4.8-2.8Z',
+    'M8.3 12h.01',
+    'M11.7 12h.01',
+  ],
+  bell: [
+    'M10 3.6v1.2',
+    'M6 10.6a4 4 0 0 1 8 0c0 2 .9 3.2 1.6 3.8H4.4c.7-.6 1.6-1.8 1.6-3.8Z',
+    'M8.5 14.4a1.5 1.5 0 0 0 3 0',
+  ],
+  swatchNone: [
+    'M10 4.2a5.8 5.8 0 1 0 0 11.6 5.8 5.8 0 1 0 0-11.6Z',
+    'M5.9 14.1l8.2-8.2',
+  ],
+  mouse: [
+    'M6.2 12.2a4.6 3.5 0 0 1 8.8 0c0 1.6-2 2.6-4.4 2.6s-4.4-1-4.4-2.6Z',
+    'M13 8.8c1-1.3 2.5-1.2 2.8.2',
+    'M6.2 12.6c-1.8.2-2.8-.6-2.8-2',
+    'M12.6 11.4h.01',
+  ],
+  fish: [
+    'M16.5 10c-1.8 2.4-4.2 3.4-6.9 3-1.1-.2-2-.8-2.7-1.7L3.8 13V7l3.1 1.7c.7-.9 1.6-1.5 2.7-1.7 2.7-.4 5.1.6 6.9 3Z',
+    'M13.2 9.5h.01',
+  ],
+  treat: [
+    'M16.6 10c-1.8 2.6-4.4 3.6-7.2 3.1-1.2-.2-2.1-.9-2.8-1.8L3.4 13.2V6.8l3.2 1.9c.7-.9 1.6-1.6 2.8-1.8 2.8-.5 5.4.5 7.2 3.1Z',
+    'M10.4 8.2v3.6',
+  ],
   laser: [
     'M3.6 16.4 10.8 9.2',
     'M13.5 6.5a1.9 1.9 0 1 0 0 .01',
@@ -98,18 +169,52 @@ const ICONS = {
     'M4.5 11.4c3.3-.6 7.3.7 10.4 2.2',
     'M14.4 14.5c1.2 1.1 2.3 1.5 3.3 1.2',
   ],
+  feather: [
+    'M4.4 15.6 15.2 4.8',
+    'M9.2 10.8c-.4-2.5 1-4.8 3.6-5.6 1-.3 2-.4 2.6-.2.2.6.1 1.6-.2 2.6-.8 2.6-3.1 4-5.6 3.6',
+    'M7.4 12.6l-1.5-2.1',
+  ],
+  crinkle: [
+    'M10 3.5l2.4 2.3 3.3-.6-.6 3.3 2.3 2.4-2.8 1.9.3 3.3-3.3-.7L10 17.5l-1.6-2.1-3.3.7.3-3.3L2.6 10.9l2.3-2.4-.6-3.3 3.3.6L10 3.5Z',
+  ],
+  spring: [
+    'M6.2 5.2c0-1.2 7.6-1.2 7.6 0s-7.6 1.6-7.6 2.8 7.6 1.4 7.6 2.6-7.6 1.4-7.6 2.6 7.6 1.2 7.6 2.4',
+  ],
+  pingPong: [
+    'M10 4a6 6 0 1 0 0 12 6 6 0 1 0 0-12Z',
+    'M7.4 7.6c.7-.9 1.7-1.4 2.8-1.5',
+  ],
+  hairTie: [
+    'M10 4.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 1 0 0-11Z',
+    'M10 7.1a2.9 2.9 0 1 0 0 5.8 2.9 2.9 0 1 0 0-5.8Z',
+  ],
+  bubbles: [
+    'M7.4 7.8a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 1 0 0-6.4Z',
+    'M13.6 5.2a2.2 2.2 0 1 0 0 4.4 2.2 2.2 0 1 0 0-4.4Z',
+    'M13.2 12.6a1.5 1.5 0 1 0 0 3 1.5 1.5 0 1 0 0-3Z',
+  ],
+  cucumber: [
+    'M5 13.8c1.1 1.4 3.6 1.2 6.8-1.4 3.2-2.6 4.4-5.2 3.2-6.4-1.1-1.2-3.7-.2-6.8 2.4C5.1 11 3.9 12.4 5 13.8Z',
+    'M8.6 10.6h.01',
+    'M11.6 8.2h.01',
+  ],
   box: [
     'M3.6 7.2 10 4l6.4 3.2v6.5L10 16.8l-6.4-3.1V7.2Z',
     'M3.6 7.2 10 10.4l6.4-3.2',
     'M10 10.4v6.4',
     'M6.8 5.6 13.2 8.8',
   ],
-  treat: [
-    'M17 10c-1.9 2.7-4.6 3.8-7.6 3.3-1.2-.2-2.2-.9-2.9-1.9L3.3 13.4V6.6l3.2 2c.7-1 1.7-1.7 2.9-1.9 3-.5 5.7.6 7.6 3.3Z',
-    'M13.6 9.4h.01',
+  paperBag: [
+    'M5.6 7.2h8.8l1 9.2H4.6l1-9.2Z',
+    'M5.6 7.2l1.6-2.4 2.8 1.6 2.8-1.6 1.6 2.4',
+    'M8.2 11.4c0 1.3 3.6 1.3 3.6 0',
   ],
-  minus: ['M5.5 10h9'],
-  plus: ['M10 5.5v9', 'M5.5 10h9'],
+  tapedSquare: [
+    'M4.8 4.8h10.4v10.4H4.8Z',
+    'M4.8 7.6h2.8V4.8',
+    'M12.4 15.2v-2.8h2.8',
+  ],
+  clear: ['M5.4 6.4h9.2', 'M7.4 6.4l.6 8.4h4l.6-8.4', 'M8.4 4.4h3.2'],
   chevronDown: ['M5.8 8l4.2 4.2L14.2 8'],
   statusPill: [
     'M3.6 10a3.8 3.8 0 0 1 3.8-3.8h5.2a3.8 3.8 0 0 1 0 7.6H7.4A3.8 3.8 0 0 1 3.6 10Z',
@@ -217,18 +322,36 @@ export class ToyDock {
   private readonly fabTip: HTMLSpanElement;
   private readonly popover: HTMLDivElement;
 
-  private readonly sceneButtons = new Map<SceneTheme, HTMLButtonElement>();
-  private readonly lightingButtons = new Map<LightingMode, HTMLButtonElement>();
-  private readonly breedButtons = new Map<CatBreedMode, HTMLButtonElement>();
+  // Header controls
+  private readonly soundBtn: HTMLButtonElement;
+  private readonly photoBtn: HTMLButtonElement;
 
+  // Tabs
+  private readonly tabButtons = new Map<DockTabId, HTMLButtonElement>();
+  private readonly tabPanels = new Map<DockTabId, HTMLDivElement>();
+  private activeTab: DockTabId = 'cats';
+
+  // Tab 1: Cats
   private readonly catMinusBtn: HTMLButtonElement;
   private readonly catPlusBtn: HTMLButtonElement;
-  private readonly catCountEl: HTMLSpanElement;
+  private readonly catCountInput: HTMLInputElement;
+  private readonly lightweightHint: HTMLDivElement;
+  private readonly breedButtons = new Map<CatBreedMode, HTMLButtonElement>();
+  private readonly kittenToggleBtn: HTMLButtonElement;
+  private readonly collarButtons = new Map<string, HTMLButtonElement>();
+  private readonly bellToggleBtn: HTMLButtonElement;
 
+  // Tab 2: Play
   private readonly laserBtn: HTMLButtonElement;
   private readonly boxBtn: HTMLButtonElement;
+  private readonly paperBagBtn: HTMLButtonElement;
+  private readonly tapedSquareBtn: HTMLButtonElement;
   private readonly treatCountBadge: HTMLSpanElement;
+  private readonly clearToysBtn: HTMLButtonElement;
 
+  // Tab 3: World
+  private readonly sceneButtons = new Map<SceneTheme, HTMLButtonElement>();
+  private readonly lightingButtons = new Map<LightingMode, HTMLButtonElement>();
   private readonly moreDetails: HTMLDetailsElement;
   private readonly hudSwitch: HTMLButtonElement;
   private readonly propsSwitch: HTMLButtonElement;
@@ -243,8 +366,17 @@ export class ToyDock {
     boxVisible: true,
     catCount: 6,
     breedMode: 'mix',
+    kittenMode: false,
+    collarColor: null,
+    collarBell: true,
+    soundEnabled: false,
+    soundVolume: 0.45,
     propsVisible: true,
     activeTreatsCount: 0,
+    activeToysCount: 0,
+    paperBagActive: false,
+    tapedSquareActive: false,
+    circadianPhase: 'midday',
     hudVisible: false,
     debugMode: false,
     visible: true,
@@ -257,6 +389,7 @@ export class ToyDock {
 
   private popoverOpen = false;
   private popoverCloseTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastSoundRendered: boolean | null = null;
 
   private readonly handleOutsidePointerDown: (e: PointerEvent) => void;
   private readonly handleWindowKeyDown: (e: KeyboardEvent) => void;
@@ -272,7 +405,7 @@ export class ToyDock {
       this.state = {
         ...this.state,
         ...initialState,
-        catCount: Math.max(1, Math.min(12, initialState.catCount ?? this.state.catCount)),
+        catCount: normalizeCatCount(initialState.catCount, this.state.catCount),
       };
     }
 
@@ -282,7 +415,7 @@ export class ToyDock {
     this.anchor = document.createElement('div');
     this.anchor.className = 'ns-fab-anchor';
 
-    // Collapsed State: Single calm circular warm-glass FAB + quiet hover-only tooltip
+    // Collapsed State: Single calm circular warm-glass FAB + hover-only tooltip
     this.fabWrap = document.createElement('div');
     this.fabWrap.className = 'ns-fab-wrap';
 
@@ -312,7 +445,7 @@ export class ToyDock {
 
     this.fabWrap.append(this.fabBtn, this.fabTip);
 
-    // Expanded Popover (~272px wide max, 3 calm groups + collapsed More footer)
+    // Expanded Popover (~296px wide, 3-tab segmented switcher)
     this.popover = document.createElement('div');
     this.popover.id = popoverId;
     this.popover.className = 'ns-double-bezel ns-dock-popover';
@@ -322,34 +455,486 @@ export class ToyDock {
     this.popover.hidden = true;
 
     // -------------------------------------------------------------------------
-    // GROUP 1: WORLD (Scene 4-pill track + Light 4-icon track)
+    // HEADER: Title + Sound Toggle + Photo Snapshot + Close
     // -------------------------------------------------------------------------
-    const worldGroup = document.createElement('section');
-    worldGroup.className = 'ns-group';
-    worldGroup.setAttribute('aria-label', 'World');
+    const header = document.createElement('div');
+    header.className = 'ns-popover-header';
 
-    const worldLabel = document.createElement('div');
-    worldLabel.className = 'ns-group-label';
-    worldLabel.textContent = 'World';
+    const title = document.createElement('span');
+    title.className = 'ns-popover-title';
+    title.textContent = 'NekoScape';
 
-    const sceneTrack = document.createElement('div');
-    sceneTrack.className = 'ns-seg-track';
-    sceneTrack.setAttribute('role', 'group');
-    sceneTrack.setAttribute('aria-label', 'Scene theme');
+    const headerActions = document.createElement('div');
+    headerActions.className = 'ns-header-actions';
+
+    this.soundBtn = document.createElement('button');
+    this.soundBtn.type = 'button';
+    this.soundBtn.className = 'ns-mini-icon-btn';
+    this.soundBtn.setAttribute('aria-label', 'Toggle cat sound effects');
+    this.soundBtn.setAttribute('aria-pressed', String(this.state.soundEnabled));
+    this.soundBtn.setAttribute('title', 'Toggle sound');
+    this.soundBtn.addEventListener('click', () => {
+      this.callbacks.onToggleSound?.();
+    });
+
+    this.photoBtn = document.createElement('button');
+    this.photoBtn.type = 'button';
+    this.photoBtn.className = 'ns-mini-icon-btn';
+    this.photoBtn.setAttribute('aria-label', 'Take photo snapshot');
+    this.photoBtn.setAttribute('title', 'Photo mode snapshot');
+    this.photoBtn.appendChild(createSvg(ICONS.camera, 'ns-mini-svg'));
+    this.photoBtn.addEventListener('click', () => {
+      this.callbacks.onTakePhoto?.();
+    });
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'ns-mini-icon-btn';
+    closeBtn.setAttribute('aria-label', 'Close controls');
+    closeBtn.setAttribute('title', 'Close');
+    closeBtn.appendChild(createSvg(ICONS.close, 'ns-mini-svg'));
+    closeBtn.addEventListener('click', () => {
+      this.setPopoverOpen(false);
+      this.fabBtn.focus();
+    });
+
+    headerActions.append(this.soundBtn, this.photoBtn, closeBtn);
+    header.append(title, headerActions);
+
+    // -------------------------------------------------------------------------
+    // 3-TAB SEGMENTED SWITCHER: Cats | Play | World
+    // -------------------------------------------------------------------------
+    const tabList = document.createElement('div');
+    tabList.className = 'ns-tab-track';
+    tabList.setAttribute('role', 'tablist');
+    tabList.setAttribute('aria-label', 'Control sections');
+
+    const tabOrder: readonly { id: DockTabId; label: string }[] = [
+      { id: 'cats', label: 'Cats' },
+      { id: 'play', label: 'Play' },
+      { id: 'world', label: 'World' },
+    ];
+
+    for (let i = 0; i < tabOrder.length; i++) {
+      const tabSpec = tabOrder[i];
+      const tabBtn = document.createElement('button');
+      tabBtn.type = 'button';
+      tabBtn.id = `ns-tab-${tabSpec.id}`;
+      tabBtn.className = 'ns-tab-btn';
+      tabBtn.setAttribute('role', 'tab');
+      tabBtn.setAttribute('aria-controls', `ns-panel-${tabSpec.id}`);
+      tabBtn.setAttribute('aria-selected', String(tabSpec.id === this.activeTab));
+      tabBtn.setAttribute('tabindex', tabSpec.id === this.activeTab ? '0' : '-1');
+      tabBtn.textContent = tabSpec.label;
+
+      tabBtn.addEventListener('click', () => {
+        this.setActiveTab(tabSpec.id);
+      });
+      tabBtn.addEventListener('keydown', (e: KeyboardEvent) => {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          const dir = e.key === 'ArrowRight' ? 1 : -1;
+          const nextIdx = (i + dir + tabOrder.length) % tabOrder.length;
+          const nextId = tabOrder[nextIdx].id;
+          this.setActiveTab(nextId);
+          this.tabButtons.get(nextId)?.focus();
+        }
+      });
+
+      this.tabButtons.set(tabSpec.id, tabBtn);
+      tabList.appendChild(tabBtn);
+    }
+
+    // -------------------------------------------------------------------------
+    // TAB 1: CATS (Unlimited Count, 14 Breeds + Mix, Kitten / Collars / Bell)
+    // -------------------------------------------------------------------------
+    const catsPanel = this.createTabPanel('cats');
+
+    const countSection = document.createElement('section');
+    countSection.className = 'ns-group';
+    countSection.setAttribute('aria-label', 'Cat count');
+
+    const catsHead = document.createElement('div');
+    catsHead.className = 'ns-group-head';
+
+    const catsLabel = document.createElement('label');
+    catsLabel.className = 'ns-group-label';
+    catsLabel.htmlFor = 'ns-cat-count-input';
+    catsLabel.textContent = 'Cat Count';
+
+    const stepper = document.createElement('div');
+    stepper.className = 'ns-stepper';
+    stepper.setAttribute('role', 'group');
+    stepper.setAttribute('aria-label', 'Adjust cat count');
+
+    this.catMinusBtn = document.createElement('button');
+    this.catMinusBtn.type = 'button';
+    this.catMinusBtn.className = 'ns-stepper-btn';
+    this.catMinusBtn.setAttribute('aria-label', 'Decrease cat count');
+    this.catMinusBtn.appendChild(createSvg(ICONS.minus, 'ns-stepper-svg'));
+    this.catMinusBtn.addEventListener('click', () => {
+      const next = Math.max(MIN_CAT_COUNT, this.state.catCount - 1);
+      if (next !== this.state.catCount) {
+        this.callbacks.onChangeCatCount(next);
+      }
+    });
+
+    this.catCountInput = document.createElement('input');
+    this.catCountInput.id = 'ns-cat-count-input';
+    this.catCountInput.type = 'number';
+    this.catCountInput.min = String(MIN_CAT_COUNT);
+    this.catCountInput.step = '1';
+    this.catCountInput.inputMode = 'numeric';
+    this.catCountInput.className = 'ns-stepper-input';
+    this.catCountInput.setAttribute('aria-label', 'Cat count');
+    this.catCountInput.value = String(this.state.catCount);
+
+    const commitInputValue = (): void => {
+      const parsed = Number.parseInt(this.catCountInput.value, 10);
+      if (!Number.isFinite(parsed)) {
+        this.catCountInput.value = String(this.state.catCount);
+        return;
+      }
+      const next = normalizeCatCount(parsed, this.state.catCount);
+      this.catCountInput.value = String(next);
+      if (next !== this.state.catCount) {
+        this.callbacks.onChangeCatCount(next);
+      }
+    };
+
+    this.catCountInput.addEventListener('change', commitInputValue);
+    this.catCountInput.addEventListener('blur', commitInputValue);
+    this.catCountInput.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commitInputValue();
+        this.catCountInput.blur();
+      }
+    });
+
+    this.catPlusBtn = document.createElement('button');
+    this.catPlusBtn.type = 'button';
+    this.catPlusBtn.className = 'ns-stepper-btn';
+    this.catPlusBtn.setAttribute('aria-label', 'Increase cat count');
+    this.catPlusBtn.appendChild(createSvg(ICONS.plus, 'ns-stepper-svg'));
+    this.catPlusBtn.addEventListener('click', () => {
+      this.callbacks.onChangeCatCount(this.state.catCount + 1);
+    });
+
+    stepper.append(this.catMinusBtn, this.catCountInput, this.catPlusBtn);
+    catsHead.append(catsLabel, stepper);
+
+    // Quick-add chips (+1, +5, +10)
+    const quickRow = document.createElement('div');
+    quickRow.className = 'ns-quick-add-row';
+    quickRow.setAttribute('role', 'group');
+    quickRow.setAttribute('aria-label', 'Quick add cats');
+
+    const quickLabel = document.createElement('span');
+    quickLabel.className = 'ns-quick-add-label';
+    quickLabel.textContent = 'Quick add';
+
+    const quickChips = document.createElement('div');
+    quickChips.className = 'ns-quick-add-chips';
+
+    for (const delta of [1, 5, 10] as const) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'ns-quick-chip';
+      chip.textContent = `+${delta}`;
+      chip.setAttribute('aria-label', `Add ${delta} ${delta === 1 ? 'cat' : 'cats'}`);
+      chip.addEventListener('click', () => {
+        this.callbacks.onChangeCatCount(this.state.catCount + delta);
+      });
+      quickChips.appendChild(chip);
+    }
+
+    quickRow.append(quickLabel, quickChips);
+
+    this.lightweightHint = document.createElement('div');
+    this.lightweightHint.className = 'ns-lightweight-caption';
+    this.lightweightHint.textContent = 'High count — lightweight mode active';
+    this.lightweightHint.hidden = this.state.catCount < LIGHTWEIGHT_THRESHOLD;
+
+    countSection.append(catsHead, quickRow, this.lightweightHint);
+
+    // Breed Picker (Mix + 14 Breeds)
+    const breedSection = document.createElement('section');
+    breedSection.className = 'ns-group';
+    breedSection.setAttribute('aria-label', 'Cat breed');
+
+    const breedLabel = document.createElement('div');
+    breedLabel.className = 'ns-group-label';
+    breedLabel.textContent = 'Breed';
+
+    const breedGrid = document.createElement('div');
+    breedGrid.className = 'ns-breed-scroll-grid';
+    breedGrid.setAttribute('role', 'group');
+    breedGrid.setAttribute('aria-label', 'Cat breeds');
+
+    for (const option of BREED_OPTIONS) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = option.mode === 'mix' ? 'ns-breed-pill is-mix-pill' : 'ns-breed-pill';
+      btn.setAttribute('aria-label', `Breed: ${option.fullLabel}`);
+      btn.setAttribute('aria-pressed', String(option.mode === this.state.breedMode));
+
+      const dot = document.createElement('span');
+      dot.className = 'ns-breed-dot';
+      dot.setAttribute('aria-hidden', 'true');
+      dot.style.backgroundColor = option.swatch;
+
+      const text = document.createElement('span');
+      text.className = 'ns-breed-name';
+      text.textContent = option.label;
+
+      btn.append(dot, text);
+      btn.addEventListener('click', () => {
+        this.callbacks.onSelectBreedMode(option.mode);
+      });
+
+      this.breedButtons.set(option.mode, btn);
+      breedGrid.appendChild(btn);
+    }
+
+    breedSection.append(breedLabel, breedGrid);
+
+    // Customization Row (Kitten Mode + Collar Swatches + Bell)
+    const customSection = document.createElement('section');
+    customSection.className = 'ns-group';
+    customSection.setAttribute('aria-label', 'Cat appearance');
+
+    const customLabel = document.createElement('div');
+    customLabel.className = 'ns-group-label';
+    customLabel.textContent = 'Style';
+
+    const customRow = document.createElement('div');
+    customRow.className = 'ns-custom-row';
+
+    this.kittenToggleBtn = document.createElement('button');
+    this.kittenToggleBtn.type = 'button';
+    this.kittenToggleBtn.className = 'ns-pill-toggle';
+    this.kittenToggleBtn.setAttribute('aria-label', 'Toggle Kitten Mode');
+    this.kittenToggleBtn.setAttribute('aria-pressed', String(this.state.kittenMode));
+    this.kittenToggleBtn.appendChild(createSvg(ICONS.kitten, 'ns-pill-toggle-svg'));
+    const kittenText = document.createElement('span');
+    kittenText.textContent = 'Kitten';
+    this.kittenToggleBtn.appendChild(kittenText);
+    this.kittenToggleBtn.addEventListener('click', () => {
+      this.callbacks.onToggleKittenMode?.();
+    });
+
+    const collarGroup = document.createElement('div');
+    collarGroup.className = 'ns-collar-swatches';
+    collarGroup.setAttribute('role', 'group');
+    collarGroup.setAttribute('aria-label', 'Collar color');
+
+    for (const preset of COLLAR_COLOR_PRESETS) {
+      const swatchBtn = document.createElement('button');
+      swatchBtn.type = 'button';
+      swatchBtn.className = preset.color === null ? 'ns-swatch-btn is-none' : 'ns-swatch-btn';
+      swatchBtn.setAttribute('aria-label', `Collar color: ${preset.label}`);
+      swatchBtn.setAttribute('title', preset.label);
+      swatchBtn.setAttribute('aria-pressed', String(this.isCollarMatch(preset.color)));
+
+      if (preset.color === null) {
+        swatchBtn.appendChild(createSvg(ICONS.swatchNone, 'ns-swatch-none-svg'));
+      } else {
+        const dot = document.createElement('span');
+        dot.className = 'ns-swatch-dot';
+        dot.setAttribute('aria-hidden', 'true');
+        dot.style.backgroundColor = preset.color;
+        swatchBtn.appendChild(dot);
+      }
+
+      swatchBtn.addEventListener('click', () => {
+        this.callbacks.onSelectCollarColor?.(preset.color);
+      });
+
+      this.collarButtons.set(preset.id, swatchBtn);
+      collarGroup.appendChild(swatchBtn);
+    }
+
+    this.bellToggleBtn = document.createElement('button');
+    this.bellToggleBtn.type = 'button';
+    this.bellToggleBtn.className = 'ns-pill-toggle';
+    this.bellToggleBtn.setAttribute('aria-label', 'Toggle collar bell');
+    this.bellToggleBtn.setAttribute('aria-pressed', String(this.state.collarBell));
+    this.bellToggleBtn.appendChild(createSvg(ICONS.bell, 'ns-pill-toggle-svg'));
+    const bellText = document.createElement('span');
+    bellText.textContent = 'Bell';
+    this.bellToggleBtn.appendChild(bellText);
+    this.bellToggleBtn.addEventListener('click', () => {
+      this.callbacks.onToggleCollarBell?.();
+    });
+
+    customRow.append(this.kittenToggleBtn, collarGroup, this.bellToggleBtn);
+    customSection.append(customLabel, customRow);
+
+    catsPanel.append(countSection, breedSection, customSection);
+
+    // -------------------------------------------------------------------------
+    // TAB 2: PLAY (3-Column Icon+Label Toy Grid + Clear Toys)
+    // -------------------------------------------------------------------------
+    const playPanel = this.createTabPanel('play');
+
+    const playGrid = document.createElement('div');
+    playGrid.className = 'ns-play-grid';
+
+    const dropToy = (kind: ToyKind): void => {
+      this.callbacks.onDropToy?.(kind);
+    };
+
+    const mouseBtn = this.createPlayTile('Mouse', 'Drop catnip mouse toy', ICONS.mouse, () => {
+      dropToy('mouse_toy');
+    });
+    const fishBtn = this.createPlayTile('Fish', 'Drop flopping fish toy', ICONS.fish, () => {
+      dropToy('fish_toy');
+    });
+    const treatBtn = this.createPlayTile('Treat', 'Drop tasty treat for cats', ICONS.treat, () => {
+      this.callbacks.onDropTreat();
+    });
+    treatBtn.classList.add('is-treat-tile');
+
+    this.treatCountBadge = document.createElement('span');
+    this.treatCountBadge.className = 'ns-tile-badge';
+    this.treatCountBadge.setAttribute('aria-hidden', 'true');
+    this.treatCountBadge.hidden = true;
+    treatBtn.appendChild(this.treatCountBadge);
+
+    this.laserBtn = this.createPlayTile('Laser', 'Toggle laser pointer', ICONS.laser, () => {
+      this.callbacks.onToggleLaser();
+    });
+    this.laserBtn.classList.add('is-laser-tile');
+    this.laserBtn.setAttribute('aria-pressed', String(this.state.laserActive));
+
+    const yarnBtn = this.createPlayTile('Yarn', 'Toss yarn ball', ICONS.yarn, () => {
+      this.callbacks.onTossYarn();
+    });
+    const featherBtn = this.createPlayTile('Feather', 'Drop feather wand', ICONS.feather, () => {
+      dropToy('feather_wand');
+    });
+    const crinkleBtn = this.createPlayTile('Crinkle', 'Drop crinkle ball', ICONS.crinkle, () => {
+      dropToy('crinkle_ball');
+    });
+    const springBtn = this.createPlayTile('Spring', 'Drop spring toy', ICONS.spring, () => {
+      dropToy('spring_toy');
+    });
+    const pingPongBtn = this.createPlayTile('Ping-Pong', 'Drop ping-pong ball', ICONS.pingPong, () => {
+      dropToy('ping_pong');
+    });
+    const hairTieBtn = this.createPlayTile('Hair Tie', 'Drop hair tie', ICONS.hairTie, () => {
+      dropToy('hair_tie');
+    });
+    const bubblesBtn = this.createPlayTile('Bubbles', 'Blow soap bubbles', ICONS.bubbles, () => {
+      dropToy('bubbles');
+    });
+    const cucumberBtn = this.createPlayTile('Cucumber', 'Drop sneaky cucumber', ICONS.cucumber, () => {
+      dropToy('cucumber');
+    });
+
+    this.boxBtn = this.createPlayTile('Box', 'Toggle cardboard box', ICONS.box, () => {
+      this.callbacks.onToggleBox();
+    });
+    this.boxBtn.setAttribute('aria-pressed', String(this.state.boxVisible));
+
+    this.paperBagBtn = this.createPlayTile('Paper Bag', 'Toggle paper bag', ICONS.paperBag, () => {
+      dropToy('paper_bag');
+    });
+    this.paperBagBtn.setAttribute('aria-pressed', String(Boolean(this.state.paperBagActive)));
+
+    this.tapedSquareBtn = this.createPlayTile('Tape Sq.', 'Toggle taped floor square', ICONS.tapedSquare, () => {
+      dropToy('taped_square');
+    });
+    this.tapedSquareBtn.setAttribute('aria-pressed', String(Boolean(this.state.tapedSquareActive)));
+
+    playGrid.append(
+      mouseBtn,
+      fishBtn,
+      treatBtn,
+      this.laserBtn,
+      yarnBtn,
+      featherBtn,
+      crinkleBtn,
+      springBtn,
+      pingPongBtn,
+      hairTieBtn,
+      bubblesBtn,
+      cucumberBtn,
+      this.boxBtn,
+      this.paperBagBtn,
+      this.tapedSquareBtn,
+    );
+
+    const playFooter = document.createElement('div');
+    playFooter.className = 'ns-play-footer';
+
+    this.clearToysBtn = document.createElement('button');
+    this.clearToysBtn.type = 'button';
+    this.clearToysBtn.className = 'ns-clear-toys-btn';
+    this.clearToysBtn.setAttribute('aria-label', 'Clear all dropped toys');
+    this.clearToysBtn.appendChild(createSvg(ICONS.clear, 'ns-clear-svg'));
+    const clearLabel = document.createElement('span');
+    clearLabel.textContent = 'Clear Toys';
+    this.clearToysBtn.appendChild(clearLabel);
+    this.clearToysBtn.addEventListener('click', () => {
+      this.callbacks.onClearToys?.();
+    });
+
+    playFooter.appendChild(this.clearToysBtn);
+    playPanel.append(playGrid, playFooter);
+
+    // -------------------------------------------------------------------------
+    // TAB 3: WORLD (13 Scenes, Lighting 4-Icon Track, More Disclosure)
+    // -------------------------------------------------------------------------
+    const worldPanel = this.createTabPanel('world');
+
+    const sceneSection = document.createElement('section');
+    sceneSection.className = 'ns-group';
+    sceneSection.setAttribute('aria-label', 'Scene');
+
+    const sceneLabel = document.createElement('div');
+    sceneLabel.className = 'ns-group-label';
+    sceneLabel.textContent = 'Scene';
+
+    const sceneGrid = document.createElement('div');
+    sceneGrid.className = 'ns-scene-scroll-grid';
+    sceneGrid.setAttribute('role', 'group');
+    sceneGrid.setAttribute('aria-label', 'Scene theme');
 
     for (const option of SCENE_OPTIONS) {
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'ns-seg-btn';
-      btn.textContent = option.label;
+      btn.className = 'ns-scene-pill';
       btn.setAttribute('aria-label', option.ariaLabel);
       btn.setAttribute('aria-pressed', String(option.theme === this.state.sceneTheme));
+
+      const dot = document.createElement('span');
+      dot.className = 'ns-scene-swatch';
+      dot.setAttribute('data-scene', option.theme);
+      dot.setAttribute('aria-hidden', 'true');
+
+      const text = document.createElement('span');
+      text.className = 'ns-scene-name';
+      text.textContent = option.label;
+
+      btn.append(dot, text);
       btn.addEventListener('click', () => {
         this.callbacks.onSelectScene(option.theme);
       });
       this.sceneButtons.set(option.theme, btn);
-      sceneTrack.appendChild(btn);
+      sceneGrid.appendChild(btn);
     }
+
+    sceneSection.append(sceneLabel, sceneGrid);
+
+    const lightSection = document.createElement('section');
+    lightSection.className = 'ns-group';
+    lightSection.setAttribute('aria-label', 'Lighting');
+
+    const lightLabel = document.createElement('div');
+    lightLabel.className = 'ns-group-label';
+    lightLabel.textContent = 'Lighting';
 
     const lightTrack = document.createElement('div');
     lightTrack.className = 'ns-seg-track ns-light-track';
@@ -371,129 +956,9 @@ export class ToyDock {
       lightTrack.appendChild(btn);
     }
 
-    worldGroup.append(worldLabel, sceneTrack, lightTrack);
+    lightSection.append(lightLabel, lightTrack);
 
-    // -------------------------------------------------------------------------
-    // GROUP 2: CATS (Inline stepper + Compact Breed selector)
-    // -------------------------------------------------------------------------
-    const catsGroup = document.createElement('section');
-    catsGroup.className = 'ns-group';
-    catsGroup.setAttribute('aria-label', 'Cats');
-
-    const catsHead = document.createElement('div');
-    catsHead.className = 'ns-group-head';
-
-    const catsLabel = document.createElement('div');
-    catsLabel.className = 'ns-group-label';
-    catsLabel.textContent = 'Cats';
-
-    const stepper = document.createElement('div');
-    stepper.className = 'ns-stepper';
-    stepper.setAttribute('role', 'group');
-    stepper.setAttribute('aria-label', 'Cat count');
-
-    this.catMinusBtn = document.createElement('button');
-    this.catMinusBtn.type = 'button';
-    this.catMinusBtn.className = 'ns-stepper-btn';
-    this.catMinusBtn.setAttribute('aria-label', 'Decrease cat count');
-    this.catMinusBtn.appendChild(createSvg(ICONS.minus, 'ns-stepper-svg'));
-    this.catMinusBtn.addEventListener('click', () => {
-      const next = Math.max(1, this.state.catCount - 1);
-      if (next !== this.state.catCount) {
-        this.callbacks.onChangeCatCount(next);
-      }
-    });
-
-    this.catCountEl = document.createElement('span');
-    this.catCountEl.className = 'ns-stepper-value';
-    this.catCountEl.setAttribute('aria-live', 'polite');
-    this.catCountEl.textContent = String(this.state.catCount);
-
-    this.catPlusBtn = document.createElement('button');
-    this.catPlusBtn.type = 'button';
-    this.catPlusBtn.className = 'ns-stepper-btn';
-    this.catPlusBtn.setAttribute('aria-label', 'Increase cat count');
-    this.catPlusBtn.appendChild(createSvg(ICONS.plus, 'ns-stepper-svg'));
-    this.catPlusBtn.addEventListener('click', () => {
-      const next = Math.min(12, this.state.catCount + 1);
-      if (next !== this.state.catCount) {
-        this.callbacks.onChangeCatCount(next);
-      }
-    });
-
-    stepper.append(this.catMinusBtn, this.catCountEl, this.catPlusBtn);
-    catsHead.append(catsLabel, stepper);
-
-    const breedRow = document.createElement('div');
-    breedRow.className = 'ns-breed-pills';
-    breedRow.setAttribute('role', 'group');
-    breedRow.setAttribute('aria-label', 'Cat breed');
-
-    for (const option of BREED_OPTIONS) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'ns-breed-pill';
-      btn.textContent = option.label;
-      btn.setAttribute('aria-label', `Breed: ${option.fullLabel}`);
-      if (option.label !== option.fullLabel) {
-        btn.setAttribute('title', option.fullLabel);
-      }
-      btn.setAttribute('aria-pressed', String(option.mode === this.state.breedMode));
-      btn.addEventListener('click', () => {
-        this.callbacks.onSelectBreedMode(option.mode);
-      });
-      this.breedButtons.set(option.mode, btn);
-      breedRow.appendChild(btn);
-    }
-
-    catsGroup.append(catsHead, breedRow);
-
-    // -------------------------------------------------------------------------
-    // GROUP 3: PLAY (Laser, Yarn, Box, Treat)
-    // -------------------------------------------------------------------------
-    const playGroup = document.createElement('section');
-    playGroup.className = 'ns-group';
-    playGroup.setAttribute('aria-label', 'Play');
-
-    const playLabel = document.createElement('div');
-    playLabel.className = 'ns-group-label';
-    playLabel.textContent = 'Play';
-
-    const playGrid = document.createElement('div');
-    playGrid.className = 'ns-play-grid';
-
-    this.laserBtn = this.createPlayTile('Laser', 'Toggle laser pointer', ICONS.laser, () => {
-      this.callbacks.onToggleLaser();
-    });
-    this.laserBtn.classList.add('is-laser-tile');
-    this.laserBtn.setAttribute('aria-pressed', String(this.state.laserActive));
-
-    const yarnBtn = this.createPlayTile('Yarn', 'Toss yarn ball', ICONS.yarn, () => {
-      this.callbacks.onTossYarn();
-    });
-
-    this.boxBtn = this.createPlayTile('Box', 'Toggle cardboard box', ICONS.box, () => {
-      this.callbacks.onToggleBox();
-    });
-    this.boxBtn.setAttribute('aria-pressed', String(this.state.boxVisible));
-
-    const treatBtn = this.createPlayTile('Treat', 'Drop tasty treat for cats', ICONS.treat, () => {
-      this.callbacks.onDropTreat();
-    });
-    treatBtn.classList.add('is-treat-tile');
-
-    this.treatCountBadge = document.createElement('span');
-    this.treatCountBadge.className = 'ns-tile-badge';
-    this.treatCountBadge.setAttribute('aria-hidden', 'true');
-    this.treatCountBadge.hidden = true;
-    treatBtn.appendChild(this.treatCountBadge);
-
-    playGrid.append(this.laserBtn, yarnBtn, this.boxBtn, treatBtn);
-    playGroup.append(playLabel, playGrid);
-
-    // -------------------------------------------------------------------------
-    // MORE DISCLOSURE (Collapsed by default)
-    // -------------------------------------------------------------------------
+    // Collapsed More Disclosure
     this.moreDetails = document.createElement('details');
     this.moreDetails.className = 'ns-more-disclosure';
 
@@ -573,7 +1038,9 @@ export class ToyDock {
     );
     this.moreDetails.append(moreSummary, moreBody);
 
-    this.popover.append(worldGroup, catsGroup, playGroup, this.moreDetails);
+    worldPanel.append(sceneSection, lightSection, this.moreDetails);
+
+    this.popover.append(header, tabList, catsPanel, playPanel, worldPanel);
     this.anchor.append(this.popover, this.fabWrap);
     this.root.appendChild(this.anchor);
 
@@ -598,7 +1065,40 @@ export class ToyDock {
     document.addEventListener('pointerdown', this.handleOutsidePointerDown, true);
     window.addEventListener('keydown', this.handleWindowKeyDown);
 
+    this.setActiveTab(this.activeTab);
     this.syncDom();
+  }
+
+  private createTabPanel(id: DockTabId): HTMLDivElement {
+    const panel = document.createElement('div');
+    panel.id = `ns-panel-${id}`;
+    panel.className = 'ns-tab-panel';
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('aria-labelledby', `ns-tab-${id}`);
+    this.tabPanels.set(id, panel);
+    return panel;
+  }
+
+  private setActiveTab(tabId: DockTabId): void {
+    this.activeTab = tabId;
+    for (const [id, btn] of this.tabButtons.entries()) {
+      const selected = id === tabId;
+      btn.setAttribute('aria-selected', String(selected));
+      btn.setAttribute('tabindex', selected ? '0' : '-1');
+    }
+    for (const [id, panel] of this.tabPanels.entries()) {
+      panel.hidden = id !== tabId;
+    }
+  }
+
+  private isCollarMatch(presetColor: string | null): boolean {
+    if (presetColor === null) {
+      return this.state.collarColor === null || this.state.collarColor === '';
+    }
+    if (!this.state.collarColor) {
+      return false;
+    }
+    return this.state.collarColor.toLowerCase() === presetColor.toLowerCase();
   }
 
   private createPlayTile(
@@ -676,7 +1176,7 @@ export class ToyDock {
     this.state = {
       ...this.state,
       ...partial,
-      catCount: Math.max(1, Math.min(12, partial.catCount ?? this.state.catCount)),
+      catCount: normalizeCatCount(partial.catCount, this.state.catCount),
     };
     this.syncDom();
   }
@@ -722,7 +1222,7 @@ export class ToyDock {
 
   /**
    * Preserved as a safe no-op for callers that previously dismissed a persistent hint pill.
-   * Collapsed state is now strictly a single uncluttered circular FAB.
+   * Collapsed state is strictly a single uncluttered circular FAB.
    */
   public dismissHint(): void {
     // Intentionally empty.
@@ -741,29 +1241,61 @@ export class ToyDock {
     // Never expose standalone mock-desktop actions when connected to native Win32 host
     this.desktopToolsSection.hidden = this.state.nativeHostConnected;
 
+    // Header sound icon
+    const soundOn = Boolean(this.state.soundEnabled);
+    this.soundBtn.setAttribute('aria-pressed', String(soundOn));
+    this.soundBtn.setAttribute('aria-label', soundOn ? 'Mute cat sound effects' : 'Enable cat sound effects');
+    if (this.lastSoundRendered !== soundOn) {
+      this.lastSoundRendered = soundOn;
+      this.soundBtn.innerHTML = '';
+      this.soundBtn.appendChild(createSvg(soundOn ? ICONS.soundOn : ICONS.soundOff, 'ns-mini-svg'));
+    }
+
+    // Tab 1: Cats
+    if (document.activeElement !== this.catCountInput) {
+      this.catCountInput.value = String(this.state.catCount);
+    }
+    this.catMinusBtn.disabled = this.state.catCount <= MIN_CAT_COUNT;
+    this.lightweightHint.hidden = this.state.catCount < LIGHTWEIGHT_THRESHOLD;
+
+    for (const [breedMode, btn] of this.breedButtons.entries()) {
+      btn.setAttribute('aria-pressed', String(breedMode === this.state.breedMode));
+    }
+
+    this.kittenToggleBtn.setAttribute('aria-pressed', String(Boolean(this.state.kittenMode)));
+    this.bellToggleBtn.setAttribute('aria-pressed', String(Boolean(this.state.collarBell)));
+    for (const preset of COLLAR_COLOR_PRESETS) {
+      const btn = this.collarButtons.get(preset.id);
+      if (btn) {
+        btn.setAttribute('aria-pressed', String(this.isCollarMatch(preset.color)));
+      }
+    }
+
+    // Tab 2: Play
+    this.laserBtn.setAttribute('aria-pressed', String(this.state.laserActive));
+    this.boxBtn.setAttribute('aria-pressed', String(this.state.boxVisible));
+    this.paperBagBtn.setAttribute('aria-pressed', String(Boolean(this.state.paperBagActive)));
+    this.tapedSquareBtn.setAttribute('aria-pressed', String(Boolean(this.state.tapedSquareActive)));
+
+    const treats = Math.max(0, Math.round(this.state.activeTreatsCount ?? 0));
+    this.treatCountBadge.hidden = treats <= 0;
+    if (treats > 0) {
+      this.treatCountBadge.textContent = String(treats);
+    }
+
+    const toysCount = Math.max(0, Math.round(this.state.activeToysCount ?? 0));
+    const clearTextEl = this.clearToysBtn.querySelector('span');
+    if (clearTextEl) {
+      clearTextEl.textContent = toysCount > 0 ? `Clear Toys (${toysCount})` : 'Clear Toys';
+    }
+
+    // Tab 3: World
     for (const [theme, btn] of this.sceneButtons.entries()) {
       btn.setAttribute('aria-pressed', String(theme === this.state.sceneTheme));
     }
 
     for (const [mode, btn] of this.lightingButtons.entries()) {
       btn.setAttribute('aria-pressed', String(mode === this.state.lightingMode));
-    }
-
-    for (const [breedMode, btn] of this.breedButtons.entries()) {
-      btn.setAttribute('aria-pressed', String(breedMode === this.state.breedMode));
-    }
-
-    this.catCountEl.textContent = String(this.state.catCount);
-    this.catMinusBtn.disabled = this.state.catCount <= 1;
-    this.catPlusBtn.disabled = this.state.catCount >= 12;
-
-    this.laserBtn.setAttribute('aria-pressed', String(this.state.laserActive));
-    this.boxBtn.setAttribute('aria-pressed', String(this.state.boxVisible));
-
-    const treats = Math.max(0, Math.round(this.state.activeTreatsCount ?? 0));
-    this.treatCountBadge.hidden = treats <= 0;
-    if (treats > 0) {
-      this.treatCountBadge.textContent = String(treats);
     }
 
     this.hudSwitch.setAttribute('aria-checked', String(this.state.hudVisible));

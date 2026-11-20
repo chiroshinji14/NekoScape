@@ -1,12 +1,23 @@
-import type { NekoSettings } from './simulation';
+import type { AabbRect, NekoSettings } from './simulation';
 
 export type {
+  AabbRect,
+  CatArchetype,
   CatBreed,
   CatBreedMode,
+  CatCustomization,
+  CatEarPose,
+  CatNeeds,
+  CatSoundEvent,
+  CircadianPhase,
   EffectiveLightingMode,
   LightingMode,
   NekoSettings,
   SceneTheme,
+  SceneThemeName,
+  ToyEntityState,
+  ToyKind,
+  WindowLedgesState,
 } from './simulation';
 
 export interface DesktopIconRect {
@@ -33,7 +44,20 @@ export type SpawnActionType =
   | 'rescanIcons'
   | 'toggleBox'
   | 'dropTreat'
-  | 'toggleProps';
+  | 'toggleProps'
+  | 'dropMouse'
+  | 'dropFish'
+  | 'dropFeather'
+  | 'dropCrinkle'
+  | 'dropSpring'
+  | 'dropPingPong'
+  | 'dropHairTie'
+  | 'dropBubbles'
+  | 'dropCucumber'
+  | 'togglePaperBag'
+  | 'toggleTapedSquare'
+  | 'clearToys'
+  | 'photoSnapshot';
 
 export type PointerButton = 'left' | 'right';
 
@@ -103,6 +127,18 @@ export interface SpawnActionMessage {
   action: SpawnActionType;
 }
 
+export interface WindowLedgesMessage {
+  type: 'WINDOW_LEDGES_UPDATE';
+  taskbarRect: AabbRect | null;
+  windowTopLedges: AabbRect[];
+}
+
+export interface AudioActivityMessage {
+  type: 'AUDIO_ACTIVITY';
+  level: number;
+  sourceX?: number;
+}
+
 export type HostToRendererMessage =
   | IconUpdateMessage
   | MouseRawMessage
@@ -112,7 +148,9 @@ export type HostToRendererMessage =
   | TypingActivityMessage
   | SettingsUpdateMessage
   | PowerStateMessage
-  | SpawnActionMessage;
+  | SpawnActionMessage
+  | WindowLedgesMessage
+  | AudioActivityMessage;
 
 export interface ReadyMessage {
   type: 'READY';

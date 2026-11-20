@@ -14,7 +14,7 @@ const PAD_Y = 24;
 
 /**
  * Centered nap-zone mat synced to SurfaceManager.getRugBounds().
- * Adapts across all four scene themes while caching its Canvas2D texture.
+ * Adapts across all 13 scene themes while caching its Canvas2D texture.
  */
 export class RugOverlay extends Container {
   private readonly surfaceManager: SurfaceManager;
@@ -69,6 +69,9 @@ export class RugOverlay extends Container {
   }
 
   private rebuildTexture(bounds: RugBounds): void {
+    if (typeof document === 'undefined') {
+      return;
+    }
     const rugW = Math.max(40, Math.round(bounds.width));
     const rugH = Math.max(40, Math.round(bounds.height));
     const canvasW = rugW + PAD_X * 2;
@@ -80,7 +83,7 @@ export class RugOverlay extends Container {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const def = SCENE_THEME_DEFS[this.theme];
+    const def = SCENE_THEME_DEFS[this.theme] ?? SCENE_THEME_DEFS.study;
     const rx = PAD_X;
     const ry = PAD_Y;
     const cr = Math.min(bounds.cornerRadius, rugW * 0.25, rugH * 0.25);
@@ -94,6 +97,33 @@ export class RugOverlay extends Container {
         break;
       case 'cafe':
         this.paintCafeVelvetMat(ctx, rx, ry, rugW, rugH, cr, def);
+        break;
+      case 'living_room':
+        this.paintPersianRug(ctx, rx, ry, rugW, rugH, cr, def);
+        break;
+      case 'rainy_window':
+        this.paintBraidedWoolRug(ctx, rx, ry, rugW, rugH, cr, def, 53219);
+        break;
+      case 'night_balcony':
+        this.paintStripedTerraceMat(ctx, rx, ry, rugW, rugH, cr, def);
+        break;
+      case 'kitchen':
+        this.paintBraidedJuteMat(ctx, rx, ry, rugW, rugH, cr, def);
+        break;
+      case 'bedroom':
+        this.paintBedroomQuiltMat(ctx, rx, ry, rugW, rugH, cr, def);
+        break;
+      case 'snowy_window':
+        this.paintKnitWinterRug(ctx, rx, ry, rugW, rugH, cr, def);
+        break;
+      case 'sunbeam':
+        this.paintStudioLinenMat(ctx, rx, ry, rugW, rugH, cr, def);
+        break;
+      case 'aquarium':
+        this.paintBlanketFortRug(ctx, rx, ry, rugW, rugH, cr, def);
+        break;
+      case 'rooftop':
+        this.paintKilimOutdoorRug(ctx, rx, ry, rugW, rugH, cr, def);
         break;
       case 'study':
       default:
@@ -267,7 +297,6 @@ export class RugOverlay extends Container {
     const rng = createSeededRng(42071);
     this.drawContactShadow(ctx, rx, ry, rugW, rugH, cr, def.rug.shadowRgb);
 
-    // Cozy knotted corner kimono ties
     const corners: ReadonlyArray<readonly [number, number, number, number]> = [
       [rx + cr * 0.32, ry + cr * 0.32, -1, -1],
       [rx + rugW - cr * 0.32, ry + cr * 0.32, 1, -1],
@@ -300,7 +329,6 @@ export class RugOverlay extends Container {
     roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
     ctx.clip();
 
-    // Persimmon-rust quilted outer border base
     const outerGrad = ctx.createLinearGradient(rx, ry, rx + rugW, ry + rugH);
     outerGrad.addColorStop(0, '#CC6647');
     outerGrad.addColorStop(0.5, '#BC583A');
@@ -308,7 +336,6 @@ export class RugOverlay extends Container {
     ctx.fillStyle = outerGrad;
     ctx.fillRect(rx, ry, rugW, rugH);
 
-    // Subtle quilted puff compartments along outer border
     const borderSize = Math.min(34, rugW * 0.14, rugH * 0.16);
     ctx.strokeStyle = 'rgba(84, 30, 16, 0.26)';
     ctx.lineWidth = 1.4;
@@ -325,7 +352,6 @@ export class RugOverlay extends Container {
       ctx.stroke();
     }
 
-    // Cream sashiko running-stitch border just outside indigo trim
     roundedRectPath(
       ctx,
       rx + 9,
@@ -340,7 +366,6 @@ export class RugOverlay extends Container {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Dark indigo-moss trim frame around center cream cushion
     const innerX = rx + borderSize;
     const innerY = ry + borderSize;
     const innerW = Math.max(24, rugW - borderSize * 2);
@@ -351,7 +376,6 @@ export class RugOverlay extends Container {
     ctx.fillStyle = def.rug.accentHex;
     ctx.fill();
 
-    // Inner quilted cream futon panel
     ctx.save();
     roundedRectPath(ctx, innerX, innerY, innerW, innerH, innerCr);
     ctx.clip();
@@ -363,7 +387,6 @@ export class RugOverlay extends Container {
     ctx.fillStyle = creamGrad;
     ctx.fillRect(innerX, innerY, innerW, innerH);
 
-    // Gentle woven cotton grain
     for (let y = innerY + 2; y < innerY + innerH; y += 4) {
       ctx.strokeStyle =
         rng() > 0.5 ? 'rgba(255, 251, 245, 0.34)' : 'rgba(182, 165, 144, 0.2)';
@@ -374,7 +397,6 @@ export class RugOverlay extends Container {
       ctx.stroke();
     }
 
-    // Quilted grid channels + tufted persimmon stitch knots
     const cols = Math.max(3, Math.round(innerW / 76));
     const rows = Math.max(2, Math.round(innerH / 68));
     const cellW = innerW / cols;
@@ -416,7 +438,6 @@ export class RugOverlay extends Container {
       ctx.stroke();
     }
 
-    // Persimmon tufted knots at internal quilt intersections
     for (let r = 1; r < rows; r++) {
       for (let c = 1; c < cols; c++) {
         const kx = innerX + c * cellW;
@@ -445,7 +466,6 @@ export class RugOverlay extends Container {
     ctx.restore();
     ctx.restore();
 
-    // Crisp outer stitched piping edge
     roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
     ctx.strokeStyle = 'rgba(92, 42, 26, 0.56)';
     ctx.lineWidth = 1.6;
@@ -464,7 +484,6 @@ export class RugOverlay extends Container {
     const rng = createSeededRng(58193);
     this.drawContactShadow(ctx, rx, ry, rugW, rugH, cr, def.rug.shadowRgb);
 
-    // Organic scalloped moss tufts hugging the perimeter of the rounded patch
     const traceTurfSilhouette = (expand: number): void => {
       roundedRectPath(
         ctx,
@@ -476,7 +495,6 @@ export class RugOverlay extends Container {
       );
     };
 
-    // Outer mossy edge puffs around perimeter
     const perimeter = 2 * (rugW + rugH);
     const tuftCount = Math.max(48, Math.floor(perimeter / 14));
     for (let i = 0; i < tuftCount; i++) {
@@ -515,7 +533,6 @@ export class RugOverlay extends Container {
     ctx.fillStyle = turfGrad;
     ctx.fillRect(rx - 8, ry - 8, rugW + 16, rugH + 16);
 
-    // Subtle soft sun-dappled lawn variation
     const mottleCount = Math.floor((rugW * rugH) / 900);
     for (let i = 0; i < mottleCount; i++) {
       const mx = rx + rng() * rugW;
@@ -528,7 +545,6 @@ export class RugOverlay extends Container {
       ctx.fill();
     }
 
-    // Fine meadow grass blades
     const bladeCount = Math.floor((rugW * rugH) / 145);
     ctx.lineCap = 'round';
     for (let i = 0; i < bladeCount; i++) {
@@ -545,7 +561,6 @@ export class RugOverlay extends Container {
       ctx.stroke();
     }
 
-    // Scattered 3-leaf (and occasional lucky 4-leaf) clover clusters
     const cloverCount = Math.max(24, Math.floor((rugW * rugH) / 2200));
     for (let i = 0; i < cloverCount; i++) {
       const cx = rx + 16 + rng() * (rugW - 32);
@@ -557,12 +572,10 @@ export class RugOverlay extends Container {
       this.drawClover(ctx, cx, cy, leafSize, leaves, rot, fill);
     }
 
-    // Tiny white & butter-gold daisies scattered gracefully near edges & corners
     const daisyCount = Math.max(12, Math.floor((rugW * rugH) / 5600));
     for (let i = 0; i < daisyCount; i++) {
       let dx = rx + 18 + rng() * (rugW - 36);
       let dy = ry + 18 + rng() * (rugH - 36);
-      // Bias slightly away from exact center so napping cats shine
       const distCx = Math.abs(dx - (rx + rugW * 0.5)) / (rugW * 0.5);
       const distCy = Math.abs(dy - (ry + rugH * 0.5)) / (rugH * 0.5);
       if (distCx < 0.35 && distCy < 0.35) {
@@ -728,7 +741,6 @@ export class RugOverlay extends Container {
     roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
     ctx.clip();
 
-    // Plush sage-velvet gradient
     const velvetGrad = ctx.createLinearGradient(rx, ry, rx + rugW, ry + rugH);
     velvetGrad.addColorStop(0, def.rug.baseStops[0]);
     velvetGrad.addColorStop(0.5, def.rug.baseStops[1]);
@@ -736,7 +748,6 @@ export class RugOverlay extends Container {
     ctx.fillStyle = velvetGrad;
     ctx.fillRect(rx, ry, rugW, rugH);
 
-    // Subtle velvet nap grain
     const grainCount = Math.floor((rugW * rugH) / 160);
     for (let i = 0; i < grainCount; i++) {
       const gx = rx + 4 + rng() * (rugW - 8);
@@ -745,7 +756,6 @@ export class RugOverlay extends Container {
       ctx.fillRect(gx, gy, 2.5, 1.5);
     }
 
-    // Soft tufted diamond cushion sheen + dimples
     const cols = Math.max(3, Math.round(rugW / 96));
     const rows = Math.max(2, Math.round(rugH / 84));
     const cellW = (rugW - 36) / cols;
@@ -766,7 +776,6 @@ export class RugOverlay extends Container {
         ctx.arc(tx, ty, 14, 0, Math.PI * 2);
         ctx.fill();
 
-        // Cream fabric-covered tuft button
         ctx.fillStyle = def.rug.accentHex;
         ctx.beginPath();
         ctx.arc(tx, ty, 2.4, 0, Math.PI * 2);
@@ -774,7 +783,6 @@ export class RugOverlay extends Container {
       }
     }
 
-    // Bolstered pillow highlight near center
     const sheen = ctx.createRadialGradient(
       rx + rugW * 0.36,
       ry + rugH * 0.3,
@@ -788,7 +796,6 @@ export class RugOverlay extends Container {
     ctx.fillStyle = sheen;
     ctx.fillRect(rx, ry, rugW, rugH);
 
-    // Inset cream saddle-stitch seam
     const stitchInset = 17;
     roundedRectPath(
       ctx,
@@ -806,7 +813,6 @@ export class RugOverlay extends Container {
 
     ctx.restore();
 
-    // Welted cream piping cord around outer edge
     roundedRectPath(ctx, rx + 1.5, ry + 1.5, rugW - 3, rugH - 3, Math.max(4, cr - 1.5));
     ctx.strokeStyle = def.rug.borderHex;
     ctx.lineWidth = 6;
@@ -820,6 +826,540 @@ export class RugOverlay extends Container {
     roundedRectPath(ctx, rx + 0.5, ry + 0.5, rugW - 1, rugH - 1, Math.max(4, cr - 0.5));
     ctx.strokeStyle = 'rgba(255, 252, 246, 0.5)';
     ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  private paintPersianRug(
+    ctx: CanvasRenderingContext2D,
+    rx: number,
+    ry: number,
+    rugW: number,
+    rugH: number,
+    cr: number,
+    def: SceneThemeDefinition,
+  ): void {
+    const rng = createSeededRng(31901);
+    this.drawContactShadow(ctx, rx, ry, rugW, rugH, cr, def.rug.shadowRgb);
+    this.drawFringeTassels(ctx, rx, ry, rugW, rugH, cr, def.rug.trimHex, rng);
+
+    ctx.save();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.clip();
+
+    const grad = ctx.createLinearGradient(rx, ry, rx + rugW, ry + rugH);
+    grad.addColorStop(0, def.rug.baseStops[0]);
+    grad.addColorStop(0.5, def.rug.baseStops[1]);
+    grad.addColorStop(1, def.rug.baseStops[2]);
+    ctx.fillStyle = grad;
+    ctx.fillRect(rx, ry, rugW, rugH);
+
+    // Woven knot grain
+    for (let y = ry + 3; y < ry + rugH; y += 4) {
+      ctx.strokeStyle = rng() > 0.5 ? 'rgba(245, 224, 198, 0.12)' : 'rgba(42, 14, 10, 0.14)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(rx, y);
+      ctx.lineTo(rx + rugW, y);
+      ctx.stroke();
+    }
+
+    // Ornate navy & cream borders
+    roundedRectPath(ctx, rx + 12, ry + 12, rugW - 24, rugH - 24, Math.max(4, cr - 6));
+    ctx.strokeStyle = def.rug.borderHex;
+    ctx.lineWidth = 10;
+    ctx.stroke();
+
+    roundedRectPath(ctx, rx + 22, ry + 22, rugW - 44, rugH - 44, Math.max(4, cr - 10));
+    ctx.strokeStyle = def.rug.accentHex;
+    ctx.lineWidth = 2.4;
+    ctx.stroke();
+
+    // Central geometric diamond medallion
+    const cx = rx + rugW * 0.5;
+    const cy = ry + rugH * 0.5;
+    const mw = Math.min(rugW * 0.36, 128);
+    const mh = Math.min(rugH * 0.44, 86);
+    ctx.fillStyle = def.rug.borderHex;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - mh);
+    ctx.lineTo(cx + mw, cy);
+    ctx.lineTo(cx, cy + mh);
+    ctx.lineTo(cx - mw, cy);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = def.rug.accentHex;
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+
+    ctx.fillStyle = def.rug.accentHex;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - mh * 0.48);
+    ctx.lineTo(cx + mw * 0.48, cy);
+    ctx.lineTo(cx, cy + mh * 0.48);
+    ctx.lineTo(cx - mw * 0.48, cy);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.restore();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.strokeStyle = 'rgba(56, 22, 16, 0.55)';
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+  }
+
+  private paintBraidedWoolRug(
+    ctx: CanvasRenderingContext2D,
+    rx: number,
+    ry: number,
+    rugW: number,
+    rugH: number,
+    cr: number,
+    def: SceneThemeDefinition,
+    seed: number,
+  ): void {
+    const rng = createSeededRng(seed);
+    this.drawContactShadow(ctx, rx, ry, rugW, rugH, cr, def.rug.shadowRgb);
+
+    ctx.save();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.clip();
+
+    const baseGrad = ctx.createLinearGradient(rx, ry, rx + rugW, ry + rugH);
+    baseGrad.addColorStop(0, def.rug.baseStops[0]);
+    baseGrad.addColorStop(0.5, def.rug.baseStops[1]);
+    baseGrad.addColorStop(1, def.rug.baseStops[2]);
+    ctx.fillStyle = baseGrad;
+    ctx.fillRect(rx, ry, rugW, rugH);
+
+    // Concentric braided wool rings
+    const maxRings = Math.floor(Math.min(rugW, rugH) * 0.42 / 14);
+    for (let i = 1; i <= maxRings; i++) {
+      const inset = i * 14;
+      roundedRectPath(
+        ctx,
+        rx + inset,
+        ry + inset,
+        rugW - inset * 2,
+        rugH - inset * 2,
+        Math.max(4, cr - inset * 0.4),
+      );
+      ctx.strokeStyle = i % 3 === 0 ? def.rug.accentHex : i % 2 === 0 ? def.rug.borderHex : def.rug.trimHex;
+      ctx.globalAlpha = i % 3 === 0 ? 0.32 : 0.24;
+      ctx.lineWidth = 6;
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // Fine wool fiber flecks
+    const count = Math.floor((rugW * rugH) / 180);
+    for (let i = 0; i < count; i++) {
+      const fx = rx + 6 + rng() * (rugW - 12);
+      const fy = ry + 6 + rng() * (rugH - 12);
+      ctx.fillStyle = rng() > 0.5 ? 'rgba(255, 255, 255, 0.14)' : 'rgba(40, 50, 52, 0.12)';
+      ctx.fillRect(fx, fy, 2.2, 1.3);
+    }
+
+    ctx.restore();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.strokeStyle = def.rug.borderHex;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  private paintStripedTerraceMat(
+    ctx: CanvasRenderingContext2D,
+    rx: number,
+    ry: number,
+    rugW: number,
+    rugH: number,
+    cr: number,
+    def: SceneThemeDefinition,
+  ): void {
+    const rng = createSeededRng(59021);
+    this.drawContactShadow(ctx, rx, ry, rugW, rugH, cr, def.rug.shadowRgb);
+    this.drawFringeTassels(ctx, rx, ry, rugW, rugH, cr, def.rug.trimHex, rng);
+
+    ctx.save();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.clip();
+
+    const grad = ctx.createLinearGradient(rx, ry, rx + rugW, ry + rugH);
+    grad.addColorStop(0, def.rug.baseStops[0]);
+    grad.addColorStop(0.5, def.rug.baseStops[1]);
+    grad.addColorStop(1, def.rug.baseStops[2]);
+    ctx.fillStyle = grad;
+    ctx.fillRect(rx, ry, rugW, rugH);
+
+    // Bold horizontal outdoor terrace stripes
+    const stripes = [0.16, 0.22, 0.78, 0.84];
+    for (let i = 0; i < stripes.length; i++) {
+      const sx = rx + rugW * stripes[i];
+      ctx.fillStyle = i % 2 === 0 ? def.rug.borderHex : def.rug.accentHex;
+      ctx.globalAlpha = i % 2 === 0 ? 0.75 : 0.45;
+      ctx.fillRect(sx - 6, ry, 12, rugH);
+    }
+    ctx.globalAlpha = 1;
+
+    // Fine canvas cross-weave
+    for (let y = ry + 3; y < ry + rugH; y += 5) {
+      ctx.strokeStyle = 'rgba(220, 230, 248, 0.08)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(rx, y);
+      ctx.lineTo(rx + rugW, y);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.strokeStyle = 'rgba(224, 184, 134, 0.4)';
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+  }
+
+  private paintBraidedJuteMat(
+    ctx: CanvasRenderingContext2D,
+    rx: number,
+    ry: number,
+    rugW: number,
+    rugH: number,
+    cr: number,
+    def: SceneThemeDefinition,
+  ): void {
+    const rng = createSeededRng(77113);
+    this.drawContactShadow(ctx, rx, ry, rugW, rugH, cr, def.rug.shadowRgb);
+
+    ctx.save();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.clip();
+
+    const grad = ctx.createLinearGradient(rx, ry, rx + rugW, ry + rugH);
+    grad.addColorStop(0, def.rug.baseStops[0]);
+    grad.addColorStop(0.5, def.rug.baseStops[1]);
+    grad.addColorStop(1, def.rug.baseStops[2]);
+    ctx.fillStyle = grad;
+    ctx.fillRect(rx, ry, rugW, rugH);
+
+    // Braided natural jute herringbone texture
+    for (let y = ry + 4; y < ry + rugH; y += 7) {
+      ctx.strokeStyle = rng() > 0.45 ? 'rgba(248, 236, 210, 0.34)' : 'rgba(138, 108, 66, 0.28)';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(rx, y);
+      ctx.lineTo(rx + rugW, y);
+      ctx.stroke();
+    }
+
+    // Sage cotton stitched outer border
+    roundedRectPath(ctx, rx + 10, ry + 10, rugW - 20, rugH - 20, Math.max(4, cr - 5));
+    ctx.strokeStyle = def.rug.borderHex;
+    ctx.lineWidth = 8;
+    ctx.stroke();
+
+    roundedRectPath(ctx, rx + 17, ry + 17, rugW - 34, rugH - 34, Math.max(4, cr - 9));
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = def.rug.accentHex;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.restore();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.strokeStyle = 'rgba(104, 82, 52, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  private paintBedroomQuiltMat(
+    ctx: CanvasRenderingContext2D,
+    rx: number,
+    ry: number,
+    rugW: number,
+    rugH: number,
+    cr: number,
+    def: SceneThemeDefinition,
+  ): void {
+    this.drawContactShadow(ctx, rx, ry, rugW, rugH, cr, def.rug.shadowRgb);
+
+    ctx.save();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.clip();
+
+    const grad = ctx.createLinearGradient(rx, ry, rx + rugW, ry + rugH);
+    grad.addColorStop(0, def.rug.baseStops[0]);
+    grad.addColorStop(0.5, def.rug.baseStops[1]);
+    grad.addColorStop(1, def.rug.baseStops[2]);
+    ctx.fillStyle = grad;
+    ctx.fillRect(rx, ry, rugW, rugH);
+
+    // Puffy patchwork squares
+    const cols = Math.max(4, Math.round(rugW / 92));
+    const rows = Math.max(3, Math.round(rugH / 76));
+    const cw = rugW / cols;
+    const ch = rugH / rows;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if ((r + c) % 2 === 0) {
+          ctx.fillStyle = 'rgba(250, 243, 236, 0.42)';
+          ctx.fillRect(rx + c * cw, ry + r * ch, cw, ch);
+        }
+        const cx = rx + (c + 0.5) * cw;
+        const cy = ry + (r + 0.5) * ch;
+        const puff = ctx.createRadialGradient(cx, cy, 2, cx, cy, Math.max(cw, ch) * 0.55);
+        puff.addColorStop(0, 'rgba(255, 252, 248, 0.2)');
+        puff.addColorStop(1, 'rgba(154, 111, 105, 0.1)');
+        ctx.fillStyle = puff;
+        ctx.fillRect(rx + c * cw, ry + r * ch, cw, ch);
+      }
+    }
+
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = 'rgba(154, 111, 105, 0.42)';
+    ctx.lineWidth = 1.2;
+    for (let c = 1; c < cols; c++) {
+      ctx.beginPath();
+      ctx.moveTo(rx + c * cw, ry);
+      ctx.lineTo(rx + c * cw, ry + rugH);
+      ctx.stroke();
+    }
+    for (let r = 1; r < rows; r++) {
+      ctx.beginPath();
+      ctx.moveTo(rx, ry + r * ch);
+      ctx.lineTo(rx + rugW, ry + r * ch);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    ctx.restore();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.strokeStyle = def.rug.borderHex;
+    ctx.lineWidth = 2.4;
+    ctx.stroke();
+  }
+
+  private paintKnitWinterRug(
+    ctx: CanvasRenderingContext2D,
+    rx: number,
+    ry: number,
+    rugW: number,
+    rugH: number,
+    cr: number,
+    def: SceneThemeDefinition,
+  ): void {
+    const rng = createSeededRng(88421);
+    this.drawContactShadow(ctx, rx, ry, rugW, rugH, cr, def.rug.shadowRgb);
+    this.drawFringeTassels(ctx, rx, ry, rugW, rugH, cr, def.rug.trimHex, rng);
+
+    ctx.save();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.clip();
+
+    const grad = ctx.createLinearGradient(rx, ry, rx + rugW, ry + rugH);
+    grad.addColorStop(0, def.rug.baseStops[0]);
+    grad.addColorStop(0.5, def.rug.baseStops[1]);
+    grad.addColorStop(1, def.rug.baseStops[2]);
+    ctx.fillStyle = grad;
+    ctx.fillRect(rx, ry, rugW, rugH);
+
+    // Chunky vertical cable-knit ridges
+    for (let x = rx + 12; x < rx + rugW - 12; x += 22) {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      for (let y = ry; y <= ry + rugH; y += 10) {
+        const wave = Math.sin(y * 0.14) * 3.5;
+        if (y === ry) ctx.moveTo(x + wave, y);
+        else ctx.lineTo(x + wave, y);
+      }
+      ctx.stroke();
+
+      ctx.strokeStyle = 'rgba(138, 158, 176, 0.24)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      for (let y = ry; y <= ry + rugH; y += 10) {
+        const wave = Math.sin(y * 0.14 + Math.PI) * 3.5;
+        if (y === ry) ctx.moveTo(x + wave, y);
+        else ctx.lineTo(x + wave, y);
+      }
+      ctx.stroke();
+    }
+
+    roundedRectPath(ctx, rx + 14, ry + 14, rugW - 28, rugH - 28, Math.max(4, cr - 8));
+    ctx.strokeStyle = def.rug.borderHex;
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
+
+    roundedRectPath(ctx, rx + 21, ry + 21, rugW - 42, rugH - 42, Math.max(4, cr - 12));
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = def.rug.accentHex;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.restore();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.strokeStyle = 'rgba(120, 142, 162, 0.55)';
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+  }
+
+  private paintStudioLinenMat(
+    ctx: CanvasRenderingContext2D,
+    rx: number,
+    ry: number,
+    rugW: number,
+    rugH: number,
+    cr: number,
+    def: SceneThemeDefinition,
+  ): void {
+    const rng = createSeededRng(41823);
+    this.drawContactShadow(ctx, rx, ry, rugW, rugH, cr, def.rug.shadowRgb);
+
+    ctx.save();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.clip();
+
+    const grad = ctx.createLinearGradient(rx, ry, rx + rugW, ry + rugH);
+    grad.addColorStop(0, def.rug.baseStops[0]);
+    grad.addColorStop(0.5, def.rug.baseStops[1]);
+    grad.addColorStop(1, def.rug.baseStops[2]);
+    ctx.fillStyle = grad;
+    ctx.fillRect(rx, ry, rugW, rugH);
+
+    // Fine natural oat linen crosshatch
+    ctx.lineWidth = 1;
+    for (let y = ry + 3; y < ry + rugH; y += 5) {
+      ctx.strokeStyle = rng() > 0.5 ? 'rgba(255, 252, 244, 0.3)' : 'rgba(182, 164, 134, 0.16)';
+      ctx.beginPath();
+      ctx.moveTo(rx, y);
+      ctx.lineTo(rx + rugW, y);
+      ctx.stroke();
+    }
+    for (let x = rx + 3; x < rx + rugW; x += 6) {
+      ctx.strokeStyle = 'rgba(176, 158, 128, 0.12)';
+      ctx.beginPath();
+      ctx.moveTo(x, ry);
+      ctx.lineTo(x, ry + rugH);
+      ctx.stroke();
+    }
+
+    roundedRectPath(ctx, rx + 12, ry + 12, rugW - 24, rugH - 24, Math.max(4, cr - 6));
+    ctx.strokeStyle = def.rug.accentHex;
+    ctx.globalAlpha = 0.65;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    ctx.restore();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.strokeStyle = def.rug.borderHex;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+  }
+
+  private paintBlanketFortRug(
+    ctx: CanvasRenderingContext2D,
+    rx: number,
+    ry: number,
+    rugW: number,
+    rugH: number,
+    cr: number,
+    def: SceneThemeDefinition,
+  ): void {
+    const rng = createSeededRng(95131);
+    this.drawContactShadow(ctx, rx, ry, rugW, rugH, cr, def.rug.shadowRgb);
+
+    ctx.save();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.clip();
+
+    const grad = ctx.createLinearGradient(rx, ry, rx + rugW, ry + rugH);
+    grad.addColorStop(0, def.rug.baseStops[0]);
+    grad.addColorStop(0.5, def.rug.baseStops[1]);
+    grad.addColorStop(1, def.rug.baseStops[2]);
+    ctx.fillStyle = grad;
+    ctx.fillRect(rx, ry, rugW, rugH);
+
+    // Subtle fleece star & constellation motif
+    const starCount = Math.max(18, Math.floor((rugW * rugH) / 4800));
+    for (let i = 0; i < starCount; i++) {
+      const sx = rx + 24 + rng() * (rugW - 48);
+      const sy = ry + 24 + rng() * (rugH - 48);
+      const r = 2 + rng() * 2.4;
+      ctx.fillStyle = def.rug.accentHex;
+      ctx.globalAlpha = 0.38 + rng() * 0.35;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    roundedRectPath(ctx, rx + 12, ry + 12, rugW - 24, rugH - 24, Math.max(4, cr - 6));
+    ctx.setLineDash([7, 5]);
+    ctx.strokeStyle = def.rug.trimHex;
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.restore();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.strokeStyle = def.rug.borderHex;
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
+  }
+
+  private paintKilimOutdoorRug(
+    ctx: CanvasRenderingContext2D,
+    rx: number,
+    ry: number,
+    rugW: number,
+    rugH: number,
+    cr: number,
+    def: SceneThemeDefinition,
+  ): void {
+    const rng = createSeededRng(62987);
+    this.drawContactShadow(ctx, rx, ry, rugW, rugH, cr, def.rug.shadowRgb);
+    this.drawFringeTassels(ctx, rx, ry, rugW, rugH, cr, def.rug.trimHex, rng);
+
+    ctx.save();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.clip();
+
+    const grad = ctx.createLinearGradient(rx, ry, rx + rugW, ry + rugH);
+    grad.addColorStop(0, def.rug.baseStops[0]);
+    grad.addColorStop(0.5, def.rug.baseStops[1]);
+    grad.addColorStop(1, def.rug.baseStops[2]);
+    ctx.fillStyle = grad;
+    ctx.fillRect(rx, ry, rugW, rugH);
+
+    // Kilim zig-zag geometric diamond bands
+    const cols = Math.max(4, Math.round(rugW / 96));
+    const dx = rugW / cols;
+    const cy = ry + rugH * 0.5;
+    const dh = Math.min(rugH * 0.28, 62);
+    for (let c = 0; c < cols; c++) {
+      const cx = rx + (c + 0.5) * dx;
+      ctx.fillStyle = c % 2 === 0 ? def.rug.borderHex : def.rug.accentHex;
+      ctx.globalAlpha = 0.72;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - dh);
+      ctx.lineTo(cx + dx * 0.36, cy);
+      ctx.lineTo(cx, cy + dh);
+      ctx.lineTo(cx - dx * 0.36, cy);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    roundedRectPath(ctx, rx + 12, ry + 12, rugW - 24, rugH - 24, Math.max(4, cr - 6));
+    ctx.strokeStyle = def.rug.borderHex;
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    ctx.restore();
+    roundedRectPath(ctx, rx, ry, rugW, rugH, cr);
+    ctx.strokeStyle = 'rgba(72, 68, 104, 0.65)';
+    ctx.lineWidth = 1.6;
     ctx.stroke();
   }
 

@@ -9,6 +9,31 @@ const THREAD_SEGMENTS = 8;
 const THREAD_SEG_LEN = 7.5;
 
 /**
+ * Computes a playful toss velocity away from a click point (or along a lively angle if centered).
+ */
+export function computeYarnClickTossVelocity(
+  ballPos: Vec2,
+  clickPos?: Vec2,
+  speed = 390,
+  angleOffsetRad = 0.18,
+): Vec2 {
+  const safeSpeed = Number.isFinite(speed) ? Math.max(80, speed) : 390;
+  let angle = -Math.PI * 0.25 + angleOffsetRad;
+  if (clickPos && Number.isFinite(clickPos.x) && Number.isFinite(clickPos.y)) {
+    const dx = ballPos.x - clickPos.x;
+    const dy = ballPos.y - clickPos.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > 2) {
+      angle = Math.atan2(dy, dx) + angleOffsetRad;
+    }
+  }
+  return {
+    x: Math.cos(angle) * safeSpeed,
+    y: Math.sin(angle) * safeSpeed,
+  };
+}
+
+/**
  * Wound crimson-terracotta yarn ball prop with rotational roll rendering,
  * 8-node Verlet trailing yarn strand, and PhysicsWorld ricochet integration.
  */
@@ -77,6 +102,50 @@ export class YarnBall extends Container {
     }
   }
 
+  /**
+   * Applies a crisp click-to-toss impulse away from the click point and returns the new velocity.
+   */
+  clickToss(clickX?: number, clickY?: number, speed = 390): Vec2 {
+    const clickPos =
+      clickX !== undefined && clickY !== undefined ? { x: clickX, y: clickY } : undefined;
+    const jitter = ((Math.sin(this.time * 13.7 + this.body.x * 0.11) * 0.5) * 0.45);
+    const vel = computeYarnClickTossVelocity(
+      { x: this.body.x, y: this.body.y },
+      clickPos,
+      speed,
+      jitter,
+    );
+    this.toss(vel.x, vel.y);
+    return vel;
+  }
+
+  /**
+   * Moves the yarn ball cleanly during drag while keeping the Verlet thread smoothly trailing.
+   */
+  moveTo(x: number, y: number): void {
+    const dx = x - this.body.x;
+    const dy = y - this.body.y;
+    this.body.x = x;
+    this.body.y = y;
+    this.body.vx = 0;
+    this.body.vy = 0;
+    if (Math.hypot(dx, dy) > 0.5) {
+      this.travelAngle = Math.atan2(dy, dx);
+    }
+    const tailAttachAngle = this.travelAngle + Math.PI;
+    const rootX = this.body.x + Math.cos(tailAttachAngle) * (this.body.radius * 0.7);
+    const rootY = this.body.y + Math.sin(tailAttachAngle) * (this.body.radius * 0.7);
+    this.thread.setRoot(rootX, rootY);
+    this.thread.update(0.016, {
+      swayAmp: Math.min(0.45, Math.hypot(dx, dy) * 0.04),
+      swayFreq: 5.5,
+      time: this.time,
+      rootAngle: tailAttachAngle,
+      constraintIterations: 8,
+    });
+    this.syncVisuals();
+  }
+
   reset(x: number, y: number): void {
     this.body.x = x;
     this.body.y = y;
@@ -142,14 +211,15 @@ export class YarnBall extends Container {
     const tailAttachAngle = this.travelAngle + Math.PI;
     const rootX = this.body.x + Math.cos(tailAttachAngle) * (this.body.radius * 0.7);
     const rootY = this.body.y + Math.sin(tailAttachAngle) * (this.body.radius * 0.7);
+    const speed = Math.hypot(this.body.vx, this.body.vy);
 
     this.thread.setRoot(rootX, rootY);
     this.thread.update(safeDt, {
-      swayAmp: moved > 0.2 ? 0.35 : 0,
-      swayFreq: 5.5,
+      swayAmp: moved > 0.15 ? Math.min(0.65, 0.2 + speed / 420) : 0,
+      swayFreq: 5.8,
       time: this.time,
       rootAngle: tailAttachAngle,
-      constraintIterations: 6,
+      constraintIterations: 8,
     });
 
     this.syncVisuals();
@@ -204,6 +274,9 @@ export class YarnBall extends Container {
   }
 
   private buildYarnTexture(): Texture {
+    if (typeof document === 'undefined') {
+      return Texture.EMPTY;
+    }
     const size = 68;
     const half = size * 0.5;
     const r = size * 0.45;

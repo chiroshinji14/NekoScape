@@ -40,6 +40,10 @@ export class DynamicFsm<TState extends string, TContext> {
     return this.states.has(state);
   }
 
+  getRegisteredStates(): TState[] {
+    return Array.from(this.states.keys());
+  }
+
   get state(): TState {
     return this._state;
   }
