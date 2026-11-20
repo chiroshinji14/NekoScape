@@ -80,6 +80,7 @@ public sealed class WebViewHost : Form
     private bool _isInitialized;
     private bool _isOccludedPaused;
     private bool _isUserPaused;
+    private bool _desktopRestoredOnExit;
     private Rectangle _targetPhysicalBounds;
     private Rectangle _windowedBounds = new(160, 90, 1280, 720);
 
@@ -424,10 +425,26 @@ public sealed class WebViewHost : Form
         </html>
         """;
 
+    public void RestoreDesktopWallpaper()
+    {
+        if (_desktopRestoredOnExit)
+        {
+            return;
+        }
+        _desktopRestoredOnExit = true;
+
+        if (!_isWindowedMode)
+        {
+            IntPtr handle = IsHandleCreated ? Handle : IntPtr.Zero;
+            _workerWManager.DetachAndRestoreWallpaper(handle);
+        }
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            RestoreDesktopWallpaper();
             _suspendCts?.Cancel();
             _suspendCts?.Dispose();
             _ipc.Detach();

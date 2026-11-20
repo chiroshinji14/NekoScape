@@ -311,6 +311,8 @@ public sealed class SystemTrayContext : ApplicationContext
         };
 
         SystemEvents.DisplaySettingsChanged += OnSystemDisplaySettingsChanged;
+        Application.ApplicationExit += OnApplicationOrProcessExit;
+        AppDomain.CurrentDomain.ProcessExit += OnApplicationOrProcessExit;
     }
 
     private void OnSystemDisplaySettingsChanged(object? sender, EventArgs e)
@@ -839,6 +841,17 @@ public sealed class SystemTrayContext : ApplicationContext
         }
     }
 
+    private void OnApplicationOrProcessExit(object? sender, EventArgs e)
+    {
+        try
+        {
+            _host.RestoreDesktopWallpaper();
+        }
+        catch (Exception)
+        {
+        }
+    }
+
     private void ExitApplication()
     {
         Dispose();
@@ -856,6 +869,9 @@ public sealed class SystemTrayContext : ApplicationContext
         if (disposing)
         {
             SystemEvents.DisplaySettingsChanged -= OnSystemDisplaySettingsChanged;
+            Application.ApplicationExit -= OnApplicationOrProcessExit;
+            AppDomain.CurrentDomain.ProcessExit -= OnApplicationOrProcessExit;
+            _host.RestoreDesktopWallpaper();
             _iconPollTimer.Stop();
             _iconPollTimer.Dispose();
             _flyoutForm?.Dispose();

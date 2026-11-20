@@ -232,6 +232,61 @@ public sealed class WorkerWManager
         _lastTarget = null;
     }
 
+    /// <summary>
+    /// Hides and unparents the wallpaper host window from WorkerW/Progman and forces
+    /// Windows Explorer to repaint the user's original desktop wallpaper on exit.
+    /// </summary>
+    public void DetachAndRestoreWallpaper(IntPtr hostHandle)
+    {
+        IntPtr parentBeforeDetach = _lastTarget?.ParentHandle ?? IntPtr.Zero;
+        if (hostHandle != IntPtr.Zero)
+        {
+            if (parentBeforeDetach == IntPtr.Zero)
+            {
+                parentBeforeDetach = Win32Api.GetParent(hostHandle);
+            }
+
+            Win32Api.ShowWindow(hostHandle, Win32Api.SW_HIDE);
+            Win32Api.SetParent(hostHandle, IntPtr.Zero);
+        }
+
+        _lastTarget = null;
+
+        const uint redrawFlags =
+            Win32Api.RDW_INVALIDATE |
+            Win32Api.RDW_ERASE |
+            Win32Api.RDW_ALLCHILDREN |
+            Win32Api.RDW_UPDATENOW;
+
+        if (parentBeforeDetach != IntPtr.Zero)
+        {
+            Win32Api.RedrawWindow(parentBeforeDetach, IntPtr.Zero, IntPtr.Zero, redrawFlags);
+        }
+
+        IntPtr progman = Win32Api.FindWindow("Progman", null);
+        if (progman != IntPtr.Zero && progman != parentBeforeDetach)
+        {
+            Win32Api.RedrawWindow(progman, IntPtr.Zero, IntPtr.Zero, redrawFlags);
+        }
+
+        // Re-trigger the active desktop wallpaper without modifying user settings so DWM/Explorer
+        // immediately restores the wallpaper image over any stale WorkerW surface.
+        char[] pathBuf = new char[512];
+        if (Win32Api.SystemParametersInfoW(Win32Api.SPI_GETDESKWALLPAPER, (uint)pathBuf.Length, pathBuf, 0))
+        {
+            int nullIdx = Array.IndexOf(pathBuf, '\0');
+            string wallpaperPath = nullIdx >= 0 ? new string(pathBuf, 0, nullIdx) : new string(pathBuf);
+            if (!string.IsNullOrWhiteSpace(wallpaperPath) && File.Exists(wallpaperPath))
+            {
+                Win32Api.SystemParametersInfoW(
+                    Win32Api.SPI_SETDESKWALLPAPER,
+                    0,
+                    wallpaperPath,
+                    Win32Api.SPIF_SENDCHANGE);
+            }
+        }
+    }
+
     private static void ApplyWallpaperWindowStyles(IntPtr hostHandle)
     {
         long style = Win32Api.GetWindowLongPtr(hostHandle, Win32Api.GWL_STYLE).ToInt64();
