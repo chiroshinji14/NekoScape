@@ -180,7 +180,11 @@ public sealed class SystemTrayContext : ApplicationContext
             _ipc.Send(new PowerStateMessage(_host.IsPaused, _userPaused ? PowerReasons.User : PowerReasons.Active));
         };
 
-        _ipc.IconRescanRequested += _ => RescanIcons(forceSend: true, sendSpawnAction: false);
+        _ipc.IconRescanRequested += _req =>
+        {
+            RescanIcons(forceSend: true, sendSpawnAction: false);
+            _ = SchedulePostDropIconRescansAsync();
+        };
 
         _ipc.StatsUpdated += stats =>
         {
@@ -210,7 +214,11 @@ public sealed class SystemTrayContext : ApplicationContext
             }
             if (!_host.IsPaused)
             {
-                _ipc.Send(msg);
+                bool effectiveLeft = msg.Buttons.Left && IsDesktopOrHostForeground();
+                MouseRawMessage effectiveMsg = effectiveLeft == msg.Buttons.Left
+                    ? msg
+                    : msg with { Buttons = msg.Buttons with { Left = false } };
+                _ipc.Send(effectiveMsg);
             }
         };
 
@@ -348,6 +356,52 @@ public sealed class SystemTrayContext : ApplicationContext
         if (sendSpawnAction)
         {
             _ipc.Send(new SpawnActionMessage(SpawnActions.RescanIcons));
+        }
+    }
+
+    private bool IsDesktopOrHostForeground()
+    {
+        if (_host.IsWindowedMode)
+        {
+            return true;
+        }
+
+        IntPtr fg = Win32Api.GetForegroundWindow();
+        if (fg == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        if (_host.IsHandleCreated && fg == _host.Handle)
+        {
+            return true;
+        }
+
+        string cls = Win32Api.ReadClassName(fg);
+        return string.Equals(cls, "Progman", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(cls, "WorkerW", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(cls, "SHELLDLL_DefView", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(cls, "SysListView32", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task SchedulePostDropIconRescansAsync()
+    {
+        try
+        {
+            await Task.Delay(90);
+            if (!_disposed)
+            {
+                InvokeOnUi(() => RescanIcons(forceSend: true, sendSpawnAction: false));
+            }
+
+            await Task.Delay(150);
+            if (!_disposed)
+            {
+                InvokeOnUi(() => RescanIcons(forceSend: false, sendSpawnAction: false));
+            }
+        }
+        catch (Exception)
+        {
         }
     }
 

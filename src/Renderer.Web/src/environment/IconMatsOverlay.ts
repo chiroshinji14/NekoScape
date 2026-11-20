@@ -29,10 +29,28 @@ function smoothCellNoise(cx: number, cy: number, cellSize: number): number {
   return top + (bot - top) * v;
 }
 
+interface AnimatedIconMat {
+  key: string;
+  id: number;
+  label: string;
+  isRecycleBin?: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  targetX: number;
+  targetY: number;
+  targetWidth: number;
+  targetHeight: number;
+  presence: number;
+  targetPresence: number;
+  wasDragged: boolean;
+}
+
 /**
  * Iconscape-inspired coalesced organic floor mats underneath desktop icons.
  * Uses a persistent offscreen canvas, ImageData, and single PixiJS Texture per viewport
- * with dirty-rect clearing and a zero-interpolation fast drag pass.
+ * with dirty-rect clearing, smooth position spring interpolation, and organic fade-in transitions.
  */
 export class IconMatsOverlay extends Container {
   private readonly sprite: Sprite;
@@ -45,7 +63,11 @@ export class IconMatsOverlay extends Container {
 
   private viewWidth: number;
   private viewHeight: number;
-  private icons: readonly AabbRect[] = [];
+  private icons: AabbRect[] = [];
+  private readonly animatedIcons = new Map<string, AnimatedIconMat>();
+  private isDraggingMode = false;
+  private needsCrispSettlePass = false;
+  private revealAlpha = 0;
   private prevDirtyCssRect: IconSdfBounds | null = null;
   private theme: SceneTheme;
   private lightingMode: EffectiveLightingMode = 'golden';
@@ -66,9 +88,236 @@ export class IconMatsOverlay extends Container {
     this.initSurface(this.viewWidth, this.viewHeight);
   }
 
+  private static makeIconKey(icon: AabbRect, index: number, seenKeys: Set<string>): string {
+    const cleanLabel = icon.label ? icon.label.trim().toLowerCase() : '';
+    if (cleanLabel.length > 0) {
+      const candidate = `lbl:${cleanLabel}`;
+      if (!seenKeys.has(candidate)) {
+        seenKeys.add(candidate);
+        return candidate;
+      }
+    }
+    const idKey = `id:${icon.id ?? index}`;
+    seenKeys.add(idKey);
+    return idKey;
+  }
+
   setIcons(icons: readonly AabbRect[], options?: { fast?: boolean }): void {
-    this.icons = icons.map((icon) => ({ ...icon }));
-    this.renderMats(options?.fast === true);
+    const fast = options?.fast === true;
+    this.isDraggingMode = fast;
+
+    if (icons.length === 0) {
+      for (const entry of this.animatedIcons.values()) {
+        entry.targetPresence = 0;
+      }
+      if (this.animatedIcons.size === 0) {
+        this.icons = [];
+        this.renderMats(false);
+      }
+      return;
+    }
+
+    const wasEmpty = this.animatedIcons.size === 0;
+    if (wasEmpty) {
+      this.revealAlpha = 0.08;
+    }
+
+    const seenKeys = new Set<string>();
+    const matchedExistingKeys = new Set<string>();
+
+    // First pass: match incoming icons by stable label or ID
+    const incomingWithKeys = icons.map((icon, idx) => ({
+      icon,
+      key: IconMatsOverlay.makeIconKey(icon, idx, seenKeys),
+    }));
+
+    for (const { icon, key } of incomingWithKeys) {
+      let existing = this.animatedIcons.get(key);
+
+      // Fallback: if Explorer re-indexed or renamed an icon, match the closest unmatched existing icon within 240px
+      if (!existing && !wasEmpty) {
+        let bestDist = 240;
+        let bestCandidate: AnimatedIconMat | undefined;
+        for (const candidate of this.animatedIcons.values()) {
+          if (matchedExistingKeys.has(candidate.key)) continue;
+          const dist = Math.hypot(candidate.targetX - icon.x, candidate.targetY - icon.y);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestCandidate = candidate;
+          }
+        }
+        if (bestCandidate) {
+          this.animatedIcons.delete(bestCandidate.key);
+          bestCandidate.key = key;
+          this.animatedIcons.set(key, bestCandidate);
+          existing = bestCandidate;
+        }
+      }
+
+      if (existing) {
+        matchedExistingKeys.add(key);
+        const moveDist = Math.hypot(icon.x - existing.targetX, icon.y - existing.targetY);
+        existing.id = icon.id;
+        existing.label = icon.label;
+        existing.isRecycleBin = icon.isRecycleBin;
+        existing.targetX = icon.x;
+        existing.targetY = icon.y;
+        existing.targetWidth = icon.width;
+        existing.targetHeight = icon.height;
+        existing.targetPresence = 1;
+
+        if (fast) {
+          // During active folder drag, follow the dragged folder tightly with silky micro-smoothing
+          if (moveDist > 1.5) {
+            existing.wasDragged = true;
+          }
+          existing.x += (icon.x - existing.x) * 0.75;
+          existing.y += (icon.y - existing.y) * 0.75;
+        } else if (existing.wasDragged || (!wasEmpty && moveDist > 14)) {
+          // When a dragged icon is dropped (or snaps to a new desktop slot),
+          // place it at the drop target and render an animated fade-in & organic bloom!
+          existing.wasDragged = false;
+          existing.x = icon.x;
+          existing.y = icon.y;
+          existing.width = icon.width;
+          existing.height = icon.height;
+          existing.presence = 0.04;
+          existing.targetPresence = 1;
+        }
+      } else {
+        matchedExistingKeys.add(key);
+        this.animatedIcons.set(key, {
+          key,
+          id: icon.id,
+          label: icon.label,
+          isRecycleBin: icon.isRecycleBin,
+          x: icon.x,
+          y: icon.y,
+          width: icon.width,
+          height: icon.height,
+          targetX: icon.x,
+          targetY: icon.y,
+          targetWidth: icon.width,
+          targetHeight: icon.height,
+          // New icons start contracted and smoothly bloom + fade in
+          presence: wasEmpty ? 0.28 : 0.04,
+          targetPresence: 1,
+          wasDragged: false,
+        });
+      }
+    }
+
+    for (const [key, entry] of this.animatedIcons) {
+      if (!matchedExistingKeys.has(key)) {
+        entry.targetPresence = 0;
+      }
+    }
+
+    this.rebuildWorkingIconsFromAnimated();
+    this.needsCrispSettlePass = true;
+    this.renderMats(fast || this.isAnimating());
+    this.applyLightingTint();
+  }
+
+  update(dt: number): void {
+    if (this.animatedIcons.size === 0) {
+      return;
+    }
+
+    const safeDt = Math.min(0.05, Math.max(0.001, dt));
+    let movedOrFaded = false;
+
+    if (this.revealAlpha < 1) {
+      this.revealAlpha = Math.min(1, this.revealAlpha + safeDt * 3.2);
+      this.applyLightingTint();
+      movedOrFaded = true;
+    }
+
+    const posRate = this.isDraggingMode ? 30 : 16;
+    const posAlpha = 1 - Math.exp(-posRate * safeDt);
+    const presenceAlpha = 1 - Math.exp(-10.5 * safeDt);
+
+    for (const [key, entry] of this.animatedIcons) {
+      const dx = entry.targetX - entry.x;
+      const dy = entry.targetY - entry.y;
+      const dw = entry.targetWidth - entry.width;
+      const dh = entry.targetHeight - entry.height;
+      const dp = entry.targetPresence - entry.presence;
+
+      if (Math.hypot(dx, dy) > 0.35 || Math.abs(dw) > 0.35 || Math.abs(dh) > 0.35) {
+        entry.x += dx * posAlpha;
+        entry.y += dy * posAlpha;
+        entry.width += dw * posAlpha;
+        entry.height += dh * posAlpha;
+        movedOrFaded = true;
+      } else {
+        entry.x = entry.targetX;
+        entry.y = entry.targetY;
+        entry.width = entry.targetWidth;
+        entry.height = entry.targetHeight;
+      }
+
+      if (Math.abs(dp) > 0.012) {
+        entry.presence += dp * presenceAlpha;
+        movedOrFaded = true;
+      } else {
+        entry.presence = entry.targetPresence;
+        if (entry.targetPresence <= 0.001) {
+          this.animatedIcons.delete(key);
+          movedOrFaded = true;
+        }
+      }
+    }
+
+    if (movedOrFaded) {
+      this.rebuildWorkingIconsFromAnimated();
+      const stillMoving = this.isAnimating();
+      this.renderMats(this.isDraggingMode || stillMoving);
+      this.needsCrispSettlePass = stillMoving || this.isDraggingMode;
+    } else if (this.needsCrispSettlePass && !this.isDraggingMode) {
+      this.needsCrispSettlePass = false;
+      this.rebuildWorkingIconsFromAnimated();
+      this.renderMats(false);
+    }
+  }
+
+  private isAnimating(): boolean {
+    if (this.revealAlpha < 0.995) {
+      return true;
+    }
+    for (const entry of this.animatedIcons.values()) {
+      if (
+        Math.hypot(entry.targetX - entry.x, entry.targetY - entry.y) > 0.4 ||
+        Math.abs(entry.targetPresence - entry.presence) > 0.015
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private rebuildWorkingIconsFromAnimated(): void {
+    const next: AabbRect[] = [];
+    for (const entry of this.animatedIcons.values()) {
+      const p = Math.max(0.05, Math.min(1, entry.presence));
+      // Ease-out cubic scale so new or removed icons bloom/shrink smoothly around their center
+      const eased = 1 - Math.pow(1 - p, 3);
+      const scale = 0.42 + 0.58 * eased;
+      const cx = entry.x + entry.width * 0.5;
+      const cy = entry.y + entry.height * 0.5;
+      const w = Math.max(12, entry.width * scale);
+      const h = Math.max(12, entry.height * scale);
+      next.push({
+        id: entry.id,
+        label: entry.label,
+        isRecycleBin: entry.isRecycleBin,
+        x: cx - w * 0.5,
+        y: cy - h * 0.5,
+        width: w,
+        height: h,
+      });
+    }
+    this.icons = next;
   }
 
   setTheme(theme: SceneTheme): void {
@@ -76,6 +325,8 @@ export class IconMatsOverlay extends Container {
       return;
     }
     this.theme = theme;
+    // Soft cross-fade reveal on theme change
+    this.revealAlpha = 0.35;
     this.applyLightingTint();
     if (this.icons.length > 0) {
       this.renderMats(false);
@@ -108,13 +359,14 @@ export class IconMatsOverlay extends Container {
   }
 
   private applyLightingTint(): void {
+    const easedReveal = 1 - Math.pow(1 - Math.max(0, Math.min(1, this.revealAlpha)), 3);
     if (this.lightingMode === 'night') {
       const matCfg = SCENE_THEME_DEFS[this.theme].mat;
       this.sprite.tint = matCfg.nightTint;
-      this.sprite.alpha = matCfg.nightAlpha;
+      this.sprite.alpha = matCfg.nightAlpha * easedReveal;
     } else {
       this.sprite.tint = 0xffffff;
-      this.sprite.alpha = 1;
+      this.sprite.alpha = easedReveal;
     }
   }
 
@@ -265,6 +517,47 @@ export class IconMatsOverlay extends Container {
     this.prevDirtyCssRect = newBounds;
   }
 
+  private hasPartialPresence(): boolean {
+    for (const entry of this.animatedIcons.values()) {
+      if (entry.presence < 0.995) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private sampleLocalPresenceAlpha(worldX: number, worldY: number): number {
+    let weightedSum = 0;
+    let weightSum = 0;
+    let maxContribution = 0;
+
+    for (const entry of this.animatedIcons.values()) {
+      const cx = entry.x + entry.width * 0.5;
+      const cy = entry.y + entry.height * 0.5;
+      const dx = Math.max(0, Math.abs(worldX - cx) - entry.width * 0.5);
+      const dy = Math.max(0, Math.abs(worldY - cy) - entry.height * 0.5);
+      const dist = Math.max(dx, dy);
+      if (dist >= 46) {
+        continue;
+      }
+
+      const influence = 1 - smoothstep(10, 46, dist);
+      const p = Math.max(0, Math.min(1, entry.presence));
+      const eased = 1 - Math.pow(1 - p, 3);
+      const contrib = influence * eased;
+      if (contrib > maxContribution) {
+        maxContribution = contrib;
+      }
+      weightedSum += contrib;
+      weightSum += influence;
+    }
+
+    if (weightSum <= 0.0001) {
+      return 1;
+    }
+    return Math.min(1, Math.max(maxContribution, weightedSum / weightSum));
+  }
+
   private paintFastDragBlocks(
     data: Uint8ClampedArray,
     cw: number,
@@ -280,6 +573,7 @@ export class IconMatsOverlay extends Container {
     const { r: br, g: bg, b: bb } = matCfg.borderRgb;
     const { r: sr, g: sg, b: sb } = matCfg.shadowRgb;
     const isGarden = this.theme === 'garden';
+    const checkPartialAlpha = this.hasPartialPresence();
 
     const sdfValues = sdfGrid.values;
     const sdfCols = sdfGrid.cols;
@@ -300,6 +594,10 @@ export class IconMatsOverlay extends Container {
         const d = sdfValues[sdfIdx];
         if (d > 20.5) continue;
 
+        const fadeMul = checkPartialAlpha
+          ? this.sampleLocalPresenceAlpha((sdfCol * 2 + 1) * CANVAS_STEP, (sdfRow * 2 + 1) * CANVAS_STEP)
+          : 1;
+
         let outR: number;
         let outG: number;
         let outB: number;
@@ -310,7 +608,7 @@ export class IconMatsOverlay extends Container {
           outR = sr;
           outG = sg;
           outB = sb;
-          outA = Math.round(t * t * 0.34 * 255);
+          outA = Math.round(t * t * 0.34 * fadeMul * 255);
         } else {
           const matCoverage = 1 - smoothstep(4.6, 6.0, d);
           const edgeMix = smoothstep(-8, 5.5, d);
@@ -356,7 +654,7 @@ export class IconMatsOverlay extends Container {
             }
           }
 
-          const finalAlpha = matCoverage * 0.94 + (1 - matCoverage) * 0.34;
+          const finalAlpha = (matCoverage * 0.94 + (1 - matCoverage) * 0.34) * fadeMul;
           outR = Math.max(0, Math.min(255, Math.round(r * matCoverage + sr * (1 - matCoverage))));
           outG = Math.max(0, Math.min(255, Math.round(g * matCoverage + sg * (1 - matCoverage))));
           outB = Math.max(0, Math.min(255, Math.round(b * matCoverage + sb * (1 - matCoverage))));
@@ -397,6 +695,7 @@ export class IconMatsOverlay extends Container {
     const { r: ar, g: ag, b: ab } = matCfg.accentRgb;
     const { r: sr, g: sg, b: sb } = matCfg.shadowRgb;
     const theme = this.theme;
+    const checkPartialAlpha = this.hasPartialPresence();
 
     for (let cy = nr0; cy <= nr1; cy++) {
       const worldY = (cy + 0.5) * CANVAS_STEP;
@@ -407,11 +706,12 @@ export class IconMatsOverlay extends Container {
         const d = sampleIconSdf(sdfGrid, worldX, worldY);
         if (d > 20.5) continue;
 
+        const fadeMul = checkPartialAlpha ? this.sampleLocalPresenceAlpha(worldX, worldY) : 1;
         const idx = (rowBase + cx) * 4;
 
         if (d > 6) {
           const t = 1 - (d - 6) / 14;
-          const shadowAlpha = t * t * 0.34;
+          const shadowAlpha = t * t * 0.34 * fadeMul;
           data[idx] = sr;
           data[idx + 1] = sg;
           data[idx + 2] = sb;
@@ -612,7 +912,7 @@ export class IconMatsOverlay extends Container {
           }
         }
 
-        const finalAlpha = matCoverage * 0.94 + (1 - matCoverage) * 0.34;
+        const finalAlpha = (matCoverage * 0.94 + (1 - matCoverage) * 0.34) * fadeMul;
         data[idx] = Math.max(0, Math.min(255, Math.round(r * matCoverage + sr * (1 - matCoverage))));
         data[idx + 1] = Math.max(0, Math.min(255, Math.round(g * matCoverage + sg * (1 - matCoverage))));
         data[idx + 2] = Math.max(0, Math.min(255, Math.round(b * matCoverage + sb * (1 - matCoverage))));
