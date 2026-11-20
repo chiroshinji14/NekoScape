@@ -69,6 +69,14 @@ export interface SceneThemeDefinition {
       readonly night: number;
     };
   };
+  readonly props: {
+    readonly hoverRingColor: number;
+    readonly activeRingColor: number;
+    readonly warmGlowColor: number;
+    readonly warmCoreColor: number;
+    readonly shadowColor: number;
+    readonly accentColor: number;
+  };
 }
 
 export const SCENE_THEME_DEFS: Record<SceneTheme, SceneThemeDefinition> = {
@@ -135,6 +143,14 @@ export const SCENE_THEME_DEFS: Record<SceneTheme, SceneThemeDefinition> = {
       moteTints: { day: 0xfff5dc, golden: 0xffd28a, night: 0xffbe6b },
       moteAlphaMult: { day: 0.78, golden: 1.05, night: 0.88 },
     },
+    props: {
+      hoverRingColor: 0xffe4b3,
+      activeRingColor: 0xf4b961,
+      warmGlowColor: 0xffb85c,
+      warmCoreColor: 0xffe8b8,
+      shadowColor: 0x24150c,
+      accentColor: 0xc46d53,
+    },
   },
   tatami: {
     id: 'tatami',
@@ -198,6 +214,14 @@ export const SCENE_THEME_DEFS: Record<SceneTheme, SceneThemeDefinition> = {
       nightPoolEdge: 'rgba(235, 152, 72, 0)',
       moteTints: { day: 0xfff6e2, golden: 0xffd796, night: 0xffc168 },
       moteAlphaMult: { day: 0.72, golden: 0.98, night: 0.92 },
+    },
+    props: {
+      hoverRingColor: 0xf9e6bc,
+      activeRingColor: 0xe6b566,
+      warmGlowColor: 0xffaa4c,
+      warmCoreColor: 0xffebc0,
+      shadowColor: 0x1e1912,
+      accentColor: 0xc65f40,
     },
   },
   garden: {
@@ -263,6 +287,14 @@ export const SCENE_THEME_DEFS: Record<SceneTheme, SceneThemeDefinition> = {
       moteTints: { day: 0xf8f6d6, golden: 0xffe08e, night: 0xe2f56b },
       moteAlphaMult: { day: 0.82, golden: 1.06, night: 1.48 },
     },
+    props: {
+      hoverRingColor: 0xebf5d6,
+      activeRingColor: 0x86d492,
+      warmGlowColor: 0xffcb6b,
+      warmCoreColor: 0xfff0c2,
+      shadowColor: 0x182214,
+      accentColor: 0x6ca86a,
+    },
   },
   cafe: {
     id: 'cafe',
@@ -326,6 +358,14 @@ export const SCENE_THEME_DEFS: Record<SceneTheme, SceneThemeDefinition> = {
       nightPoolEdge: 'rgba(242, 168, 86, 0)',
       moteTints: { day: 0xfff5e0, golden: 0xffd592, night: 0xffc472 },
       moteAlphaMult: { day: 0.76, golden: 1.02, night: 0.9 },
+    },
+    props: {
+      hoverRingColor: 0xfaebd2,
+      activeRingColor: 0xe8946e,
+      warmGlowColor: 0xffbc68,
+      warmCoreColor: 0xffead0,
+      shadowColor: 0x261810,
+      accentColor: 0xd47b5c,
     },
   },
 };

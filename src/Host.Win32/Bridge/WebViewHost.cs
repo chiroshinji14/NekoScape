@@ -113,6 +113,7 @@ public sealed class WebViewHost : Form
         {
             FormBorderStyle = FormBorderStyle.Sizable;
             ShowInTaskbar = true;
+            MinimumSize = new Size(640, 480);
             Bounds = CenterInBounds(initialMonitorBounds, 1280, 720);
             _windowedBounds = Bounds;
         }
@@ -120,6 +121,7 @@ public sealed class WebViewHost : Form
         {
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
+            MinimumSize = Size.Empty;
             Bounds = initialMonitorBounds;
         }
 
@@ -129,6 +131,24 @@ public sealed class WebViewHost : Form
             DefaultBackgroundColor = EspressoBackColor
         };
         Controls.Add(_webView);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        if (_isWindowedMode)
+        {
+            Win32Api.TryEnableDarkTitleBar(Handle);
+        }
+    }
+
+    protected override async void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (_isWindowedMode && !IsDisposed)
+        {
+            await SetOccludedAsync(WindowState == FormWindowState.Minimized);
+        }
     }
 
     protected override CreateParams CreateParams
@@ -208,6 +228,20 @@ public sealed class WebViewHost : Form
         return (_targetPhysicalBounds.Left, _targetPhysicalBounds.Top, dpiScale);
     }
 
+    public (double Width, double Height) GetLogicalViewportSize()
+    {
+        double dpiScale = Handle != IntPtr.Zero ? SysListViewReader.GetMonitorDpiScale(Handle) : 1.0;
+        double safeScale = dpiScale > 0 ? dpiScale : 1.0;
+
+        if (_isWindowedMode && _webView.IsHandleCreated)
+        {
+            Size client = _webView.ClientSize;
+            return (client.Width / safeScale, client.Height / safeScale);
+        }
+
+        return (_targetPhysicalBounds.Width / safeScale, _targetPhysicalBounds.Height / safeScale);
+    }
+
     public void UpdateWallpaperMonitorBounds(Rectangle monitorPhysicalBounds)
     {
         _targetPhysicalBounds = monitorPhysicalBounds;
@@ -237,12 +271,16 @@ public sealed class WebViewHost : Form
         _isWindowedMode = windowed;
         if (windowed)
         {
+            MinimumSize = new Size(640, 480);
             _windowedBounds = CenterInBounds(monitorPhysicalBounds, 1280, 720);
             _workerWManager.DetachToWindowed(Handle, _windowedBounds);
+            Win32Api.TryEnableDarkTitleBar(Handle);
+            _ = SetOccludedAsync(false);
             Activate();
         }
         else
         {
+            MinimumSize = Size.Empty;
             _windowedBounds = Bounds;
             _workerWManager.AttachToDesktop(Handle, monitorPhysicalBounds);
         }

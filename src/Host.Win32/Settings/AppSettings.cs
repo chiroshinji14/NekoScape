@@ -1,15 +1,31 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using Microsoft.Win32;
 
 namespace NekoScape.Host.Settings;
 
+public sealed record BreedModeOption(string Key, string Label, string ShortLabel);
+
 public sealed class NekoSettings
 {
+    private static readonly Regex SeparatorRegex = new(@"[\s-]+", RegexOptions.Compiled);
+
+    public static readonly IReadOnlyList<BreedModeOption> BreedModeOptions =
+    [
+        new("mix", "All Breeds", "All Breeds"),
+        new("persian", "Persian", "Persian"),
+        new("siamese", "Siamese", "Siamese"),
+        new("british_shorthair", "British Shorthair", "British"),
+        new("munchkin", "Munchkin", "Munchkin"),
+        new("sphynx", "Sphynx", "Sphynx"),
+        new("domestic_shorthair", "Domestic Shorthair", "Domestic"),
+    ];
+
     public int CatCount { get; set; } = 6;
     public int FpsCap { get; set; } = 60;
-    public bool ShowHud { get; set; } = true;
+    public bool ShowHud { get; set; } = false;
     public bool ShowToyDock { get; set; } = true;
     public bool DebugMode { get; set; } = false;
     public bool EnableLaserHotkey { get; set; } = true;
@@ -18,6 +34,8 @@ public sealed class NekoSettings
     public int IdleNapMinutes { get; set; } = 5;
     public string LightingMode { get; set; } = "golden";
     public string SceneTheme { get; set; } = "study";
+    public string BreedMode { get; set; } = "mix";
+    public bool ShowSceneProps { get; set; } = true;
 
     public NekoSettings Clone() => new()
     {
@@ -31,7 +49,9 @@ public sealed class NekoSettings
         LaunchAtStartup = LaunchAtStartup,
         IdleNapMinutes = IdleNapMinutes,
         LightingMode = LightingMode,
-        SceneTheme = SceneTheme
+        SceneTheme = SceneTheme,
+        BreedMode = BreedMode,
+        ShowSceneProps = ShowSceneProps
     };
 
     public NekoSettings Normalized()
@@ -48,6 +68,7 @@ public sealed class NekoSettings
         copy.IdleNapMinutes = Math.Clamp(copy.IdleNapMinutes, 1, 120);
         copy.LightingMode = NormalizeLightingMode(copy.LightingMode);
         copy.SceneTheme = NormalizeSceneTheme(copy.SceneTheme);
+        copy.BreedMode = NormalizeBreedMode(copy.BreedMode);
         return copy;
     }
 
@@ -66,6 +87,76 @@ public sealed class NekoSettings
         "cafe" => "cafe",
         _ => "study"
     };
+
+    public static string NormalizeBreedMode(string? mode)
+    {
+        if (string.IsNullOrWhiteSpace(mode))
+        {
+            return "mix";
+        }
+
+        string key = SeparatorRegex.Replace(mode.Trim().ToLowerInvariant(), "_");
+        return key switch
+        {
+            "" or "mix" or "all" or "mixed" => "mix",
+            "persian" or "calico" => "persian",
+            "siamese" => "siamese",
+            "british_shorthair" or "blue_grey" or "british" or "bsh" => "british_shorthair",
+            "munchkin" or "tuxedo" => "munchkin",
+            "sphynx" => "sphynx",
+            "domestic_shorthair" or "black" or "orange_tabby" or "tabby" or "dsh" => "domestic_shorthair",
+            _ => "mix"
+        };
+    }
+
+    public static string GetBreedModeLabel(string? mode)
+    {
+        string normalized = NormalizeBreedMode(mode);
+        foreach (BreedModeOption option in BreedModeOptions)
+        {
+            if (string.Equals(option.Key, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                return option.Label;
+            }
+        }
+        return "All Breeds";
+    }
+}
+
+public sealed class NekoSettingsPatch
+{
+    public int? CatCount { get; set; }
+    public int? FpsCap { get; set; }
+    public bool? ShowHud { get; set; }
+    public bool? ShowToyDock { get; set; }
+    public bool? DebugMode { get; set; }
+    public bool? EnableLaserHotkey { get; set; }
+    public bool? EnableShellReactions { get; set; }
+    public bool? LaunchAtStartup { get; set; }
+    public int? IdleNapMinutes { get; set; }
+    public string? LightingMode { get; set; }
+    public string? SceneTheme { get; set; }
+    public string? BreedMode { get; set; }
+    public bool? ShowSceneProps { get; set; }
+
+    public NekoSettings ApplyTo(NekoSettings current)
+    {
+        NekoSettings updated = current.Clone();
+        if (CatCount.HasValue) updated.CatCount = CatCount.Value;
+        if (FpsCap.HasValue) updated.FpsCap = FpsCap.Value;
+        if (ShowHud.HasValue) updated.ShowHud = ShowHud.Value;
+        if (ShowToyDock.HasValue) updated.ShowToyDock = ShowToyDock.Value;
+        if (DebugMode.HasValue) updated.DebugMode = DebugMode.Value;
+        if (EnableLaserHotkey.HasValue) updated.EnableLaserHotkey = EnableLaserHotkey.Value;
+        if (EnableShellReactions.HasValue) updated.EnableShellReactions = EnableShellReactions.Value;
+        if (LaunchAtStartup.HasValue) updated.LaunchAtStartup = LaunchAtStartup.Value;
+        if (IdleNapMinutes.HasValue) updated.IdleNapMinutes = IdleNapMinutes.Value;
+        if (LightingMode is not null) updated.LightingMode = LightingMode;
+        if (SceneTheme is not null) updated.SceneTheme = SceneTheme;
+        if (BreedMode is not null) updated.BreedMode = BreedMode;
+        if (ShowSceneProps.HasValue) updated.ShowSceneProps = ShowSceneProps.Value;
+        return updated.Normalized();
+    }
 }
 
 public interface IStartupRegistrar
@@ -217,10 +308,35 @@ public sealed class AppSettingsStore
         return false;
     }
 
-    public NekoSettings Save(NekoSettings settings, bool applyStartupRegistry = true)
+    public NekoSettings Save(
+        NekoSettings settings,
+        bool applyStartupRegistry = true,
+        IReadOnlySet<string>? omitPropertyNames = null)
     {
         NekoSettings normalized = settings.Normalized();
-        string json = JsonSerializer.Serialize(normalized, JsonOptions);
+        string json;
+        if (omitPropertyNames is { Count: > 0 }
+            && JsonNode.Parse(JsonSerializer.Serialize(normalized, JsonOptions)) is JsonObject obj)
+        {
+            List<string> keysToRemove = [];
+            foreach (KeyValuePair<string, JsonNode?> kvp in obj)
+            {
+                if (omitPropertyNames.Contains(kvp.Key)
+                    || omitPropertyNames.Any(omitted => string.Equals(omitted, kvp.Key, StringComparison.OrdinalIgnoreCase)))
+                {
+                    keysToRemove.Add(kvp.Key);
+                }
+            }
+            foreach (string key in keysToRemove)
+            {
+                obj.Remove(key);
+            }
+            json = obj.ToJsonString(JsonOptions);
+        }
+        else
+        {
+            json = JsonSerializer.Serialize(normalized, JsonOptions);
+        }
 
         try
         {

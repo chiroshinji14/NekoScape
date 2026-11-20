@@ -1,6 +1,22 @@
 import { Container, Graphics, GraphicsContext } from 'pixi.js';
+import type { PropParticleBurst } from '../types/simulation';
 
-type ParticleKind = 'star' | 'dust' | 'heart' | 'ring' | 'sleepZ' | 'bubble' | 'scratch';
+type ParticleKind =
+  | 'star'
+  | 'dust'
+  | 'heart'
+  | 'ring'
+  | 'sleepZ'
+  | 'bubble'
+  | 'scratch'
+  | 'musicNote'
+  | 'sparkle'
+  | 'droplet'
+  | 'crumb'
+  | 'chimeRing'
+  | 'steam'
+  | 'petal'
+  | 'exclaim';
 
 interface ParticleSlot {
   active: boolean;
@@ -34,7 +50,7 @@ export class ParticleSystem extends Container {
   private readonly contexts: Record<ParticleKind, GraphicsContext>;
   private poolCursor = 0;
 
-  constructor(poolSize = 180) {
+  constructor(poolSize = 260) {
     super();
     this.eventMode = 'none';
     this.interactiveChildren = false;
@@ -91,9 +107,65 @@ export class ParticleSystem extends Container {
         .stroke({ width: 1.0, color: 0xda9b4a, alpha: 0.9, cap: 'round' })
         .circle(6.8, 0.8, 1.2)
         .fill({ color: 0xf4d198, alpha: 0.92 }),
+
+      musicNote: new GraphicsContext()
+        .ellipse(-2.1, 3.2, 3.1, 2.2)
+        .fill({ color: 0xffffff, alpha: 0.96 })
+        .moveTo(0.7, 2.6)
+        .lineTo(0.7, -5.8)
+        .quadraticCurveTo(4.4, -4.8, 4.8, -1.6)
+        .stroke({ width: 1.65, color: 0xffffff, alpha: 0.96, cap: 'round', join: 'round' }),
+
+      sparkle: new GraphicsContext()
+        .moveTo(0, -6.2)
+        .quadraticCurveTo(0.9, -0.9, 6.2, 0)
+        .quadraticCurveTo(0.9, 0.9, 0, 6.2)
+        .quadraticCurveTo(-0.9, 0.9, -6.2, 0)
+        .quadraticCurveTo(-0.9, -0.9, 0, -6.2)
+        .closePath()
+        .fill({ color: 0xffffff, alpha: 0.96 }),
+
+      droplet: new GraphicsContext()
+        .moveTo(0, -5.2)
+        .bezierCurveTo(3.4, -0.5, 3.4, 4.2, 0, 4.2)
+        .bezierCurveTo(-3.4, 4.2, -3.4, -0.5, 0, -5.2)
+        .closePath()
+        .fill({ color: 0x72c6e8, alpha: 0.92 })
+        .circle(-0.9, 0.8, 1.1)
+        .fill({ color: 0xeaf8ff, alpha: 0.85 }),
+
+      crumb: new GraphicsContext()
+        .roundRect(-2.6, -2.0, 5.2, 4.0, 1.4)
+        .fill({ color: 0xd99652, alpha: 0.96 })
+        .circle(-0.8, -0.5, 0.9)
+        .fill({ color: 0xf3cb92, alpha: 0.8 }),
+
+      chimeRing: new GraphicsContext()
+        .circle(0, 0, 7.5)
+        .stroke({ width: 1.5, color: 0xffffff, alpha: 0.9 }),
+
+      steam: new GraphicsContext()
+        .moveTo(-1, 5.5)
+        .quadraticCurveTo(-4, 1.5, 0.5, -1.5)
+        .quadraticCurveTo(4, -4.5, 0, -8)
+        .stroke({ width: 2.0, color: 0xf9f1e7, alpha: 0.72, cap: 'round' }),
+
+      petal: new GraphicsContext()
+        .moveTo(0, -4.4)
+        .bezierCurveTo(3.6, -3.6, 3.8, 2.2, 0, 4.4)
+        .bezierCurveTo(-3.8, 2.2, -3.6, -3.6, 0, -4.4)
+        .closePath()
+        .fill({ color: 0xffffff, alpha: 0.92 }),
+
+      exclaim: new GraphicsContext()
+        .moveTo(0, -5.8)
+        .lineTo(0, 0.8)
+        .stroke({ width: 2.1, color: 0xffd166, alpha: 0.96, cap: 'round' })
+        .circle(0, 3.8, 1.35)
+        .fill({ color: 0xffd166, alpha: 0.96 }),
     };
 
-    const count = Math.max(24, poolSize);
+    const count = Math.max(32, poolSize);
     for (let i = 0; i < count; i++) {
       const gfx = new Graphics({ context: this.contexts.dust });
       gfx.visible = false;
@@ -153,13 +225,14 @@ export class ParticleSystem extends Container {
     slot.ax = 0;
     slot.ay = 0;
     slot.drag = 0.94;
+    slot.rotation = 0;
+    slot.vRot = 0;
     slot.wobbleAmp = 0;
     slot.wobbleFreq = 0;
     slot.wobblePhase = 0;
   }
 
   spawnBonkBurst(x: number, y: number): void {
-    // 5 spinning 4-point impact stars
     const starCount = 5;
     for (let i = 0; i < starCount; i++) {
       const angle = (i / starCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.45;
@@ -182,7 +255,6 @@ export class ParticleSystem extends Container {
       slot.gfx.alpha = slot.alphaPeak;
     }
 
-    // 6 warm dust puff circles
     for (let i = 0; i < 6; i++) {
       const angle = (i / 6) * Math.PI * 2 + Math.random() * 0.6;
       const speed = 35 + Math.random() * 48;
@@ -192,8 +264,6 @@ export class ParticleSystem extends Container {
       slot.vx = Math.cos(angle) * speed;
       slot.vy = Math.sin(angle) * speed;
       slot.drag = 0.88;
-      slot.rotation = 0;
-      slot.vRot = 0;
       slot.startScale = 0.55 + Math.random() * 0.35;
       slot.endScale = 1.45 + Math.random() * 0.4;
       slot.alphaPeak = 0.62;
@@ -205,7 +275,6 @@ export class ParticleSystem extends Container {
   }
 
   spawnPurr(x: number, y: number): void {
-    // Floating warm heart + gentle acoustic purr ring
     const heart = this.acquire('heart');
     heart.x = x + (Math.random() - 0.5) * 18;
     heart.y = y - 10 + (Math.random() - 0.5) * 8;
@@ -231,14 +300,313 @@ export class ParticleSystem extends Container {
       ring.vx = 0;
       ring.vy = -6;
       ring.drag = 0.99;
-      ring.rotation = 0;
-      ring.vRot = 0;
       ring.startScale = 0.6;
       ring.endScale = 2.4;
       ring.alphaPeak = 0.45;
       ring.life = 0.7;
       ring.gfx.position.set(ring.x, ring.y);
       ring.gfx.scale.set(ring.startScale);
+    }
+  }
+
+  spawnHeartBurst(x: number, y: number, count = 3): void {
+    for (let i = 0; i < count; i++) {
+      const heart = this.acquire('heart');
+      const spread = (i - (count - 1) * 0.5) * 0.48 + (Math.random() - 0.5) * 0.22;
+      heart.x = x + spread * 16;
+      heart.y = y - 8 + (Math.random() - 0.5) * 6;
+      heart.vx = Math.sin(spread) * 26;
+      heart.vy = -34 - Math.random() * 16;
+      heart.drag = 0.96;
+      heart.rotation = spread * 0.35;
+      heart.vRot = (Math.random() - 0.5) * 0.7;
+      heart.startScale = 0.58 + Math.random() * 0.22;
+      heart.endScale = 1.18;
+      heart.alphaPeak = 0.94;
+      heart.life = 0.95 + Math.random() * 0.3;
+      heart.wobbleAmp = 8;
+      heart.wobbleFreq = 4.4;
+      heart.wobblePhase = i * 1.4;
+      heart.gfx.position.set(heart.x, heart.y);
+      heart.gfx.scale.set(heart.startScale);
+    }
+  }
+
+  spawnMusicNotes(x: number, y: number, count = 2): void {
+    const tints = [0xf5a962, 0xee8572, 0xf7d070];
+    for (let i = 0; i < count; i++) {
+      const slot = this.acquire('musicNote');
+      slot.gfx.tint = tints[i % tints.length];
+      slot.x = x + (i - (count - 1) * 0.5) * 14 + (Math.random() - 0.5) * 6;
+      slot.y = y - 10;
+      slot.vx = (Math.random() - 0.5) * 18;
+      slot.vy = -30 - Math.random() * 14;
+      slot.drag = 0.97;
+      slot.rotation = (Math.random() - 0.5) * 0.25;
+      slot.vRot = (Math.random() - 0.5) * 0.55;
+      slot.startScale = 0.68;
+      slot.endScale = 1.1;
+      slot.alphaPeak = 0.94;
+      slot.life = 0.95 + Math.random() * 0.25;
+      slot.wobbleAmp = 9;
+      slot.wobbleFreq = 4.8;
+      slot.wobblePhase = i * 2.1 + Math.random();
+      slot.gfx.position.set(slot.x, slot.y);
+      slot.gfx.scale.set(slot.startScale);
+    }
+  }
+
+  spawnCatnipSparkles(x: number, y: number, count = 7): void {
+    const tints = [0x8cd99a, 0xc9f2b8, 0xf7df8b, 0x6ec488];
+    for (let i = 0; i < count; i++) {
+      const slot = this.acquire('sparkle');
+      slot.gfx.tint = tints[i % tints.length];
+      const ang = (i / count) * Math.PI * 2 + Math.random() * 0.6;
+      const speed = 22 + Math.random() * 38;
+      slot.x = x + Math.cos(ang) * 6;
+      slot.y = y + Math.sin(ang) * 6;
+      slot.vx = Math.cos(ang) * speed;
+      slot.vy = Math.sin(ang) * speed - 18;
+      slot.drag = 0.93;
+      slot.rotation = Math.random() * Math.PI;
+      slot.vRot = (Math.random() > 0.5 ? 1 : -1) * (2.5 + Math.random() * 3.5);
+      slot.startScale = 0.48 + Math.random() * 0.35;
+      slot.endScale = 1.05;
+      slot.alphaPeak = 0.92;
+      slot.life = 0.72 + Math.random() * 0.38;
+      slot.wobbleAmp = 6;
+      slot.wobbleFreq = 5.2;
+      slot.wobblePhase = Math.random() * Math.PI * 2;
+      slot.gfx.position.set(slot.x, slot.y);
+      slot.gfx.scale.set(slot.startScale);
+    }
+  }
+
+  spawnGroomSparkle(x: number, y: number): void {
+    const slot = this.acquire('sparkle');
+    slot.gfx.tint = 0xfff0c2;
+    slot.x = x + (Math.random() - 0.5) * 14;
+    slot.y = y - 6 + (Math.random() - 0.5) * 10;
+    slot.vx = (Math.random() - 0.5) * 12;
+    slot.vy = -18 - Math.random() * 10;
+    slot.drag = 0.96;
+    slot.rotation = Math.random() * Math.PI * 0.5;
+    slot.vRot = 2.2;
+    slot.startScale = 0.4;
+    slot.endScale = 0.92;
+    slot.alphaPeak = 0.88;
+    slot.life = 0.55 + Math.random() * 0.22;
+    slot.gfx.position.set(slot.x, slot.y);
+    slot.gfx.scale.set(slot.startScale);
+  }
+
+  spawnWaterSplash(x: number, y: number, count = 6): void {
+    for (let i = 0; i < count; i++) {
+      const slot = this.acquire('droplet');
+      const ang = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.45;
+      const speed = 38 + Math.random() * 48;
+      slot.x = x + Math.cos(ang) * 4;
+      slot.y = y + Math.sin(ang) * 4;
+      slot.vx = Math.cos(ang) * speed;
+      slot.vy = Math.sin(ang) * speed - 30;
+      slot.ay = 145;
+      slot.drag = 0.94;
+      slot.rotation = ang + Math.PI * 0.5;
+      slot.startScale = 0.58 + Math.random() * 0.34;
+      slot.endScale = 0.28;
+      slot.alphaPeak = 0.92;
+      slot.life = 0.44 + Math.random() * 0.2;
+      slot.gfx.position.set(slot.x, slot.y);
+      slot.gfx.scale.set(slot.startScale);
+    }
+
+    this.spawnChimeRipple(x, y, 0x9ce2f5);
+  }
+
+  spawnKibbleCrumbs(x: number, y: number, count = 5): void {
+    for (let i = 0; i < count; i++) {
+      const slot = this.acquire('crumb');
+      const ang = Math.random() * Math.PI * 2;
+      const speed = 28 + Math.random() * 42;
+      slot.x = x + (Math.random() - 0.5) * 6;
+      slot.y = y + (Math.random() - 0.5) * 6;
+      slot.vx = Math.cos(ang) * speed;
+      slot.vy = Math.sin(ang) * speed - 22;
+      slot.ay = 140;
+      slot.drag = 0.91;
+      slot.rotation = Math.random() * Math.PI;
+      slot.vRot = (Math.random() - 0.5) * 9;
+      slot.startScale = 0.72 + Math.random() * 0.35;
+      slot.endScale = 0.35;
+      slot.alphaPeak = 0.96;
+      slot.life = 0.38 + Math.random() * 0.16;
+      slot.gfx.position.set(slot.x, slot.y);
+      slot.gfx.scale.set(slot.startScale);
+    }
+  }
+
+  spawnZoomieDust(x: number, y: number, vx: number, vy: number): void {
+    for (let i = 0; i < 4; i++) {
+      const slot = this.acquire('dust');
+      const jitter = (Math.random() - 0.5) * 0.9;
+      const baseAng = Math.atan2(-vy, -vx) + jitter;
+      const speed = 26 + Math.random() * 38;
+      slot.x = x + (Math.random() - 0.5) * 10;
+      slot.y = y + (Math.random() - 0.5) * 10;
+      slot.vx = Math.cos(baseAng) * speed;
+      slot.vy = Math.sin(baseAng) * speed;
+      slot.drag = 0.87;
+      slot.startScale = 0.62 + Math.random() * 0.32;
+      slot.endScale = 1.55 + Math.random() * 0.35;
+      slot.alphaPeak = 0.54;
+      slot.life = 0.38 + Math.random() * 0.18;
+      slot.gfx.position.set(slot.x, slot.y);
+      slot.gfx.scale.set(slot.startScale);
+      slot.gfx.alpha = slot.alphaPeak;
+    }
+  }
+
+  spawnChimeRipple(x: number, y: number, color = 0xf4cf84): void {
+    for (let i = 0; i < 2; i++) {
+      const ring = this.acquire('chimeRing');
+      ring.gfx.tint = color;
+      ring.x = x;
+      ring.y = y;
+      ring.vx = 0;
+      ring.vy = 0;
+      ring.drag = 0.99;
+      ring.startScale = 0.45 + i * 0.35;
+      ring.endScale = 2.8 + i * 0.9;
+      ring.alphaPeak = 0.55 - i * 0.14;
+      ring.life = 0.56 + i * 0.18;
+      ring.gfx.position.set(ring.x, ring.y);
+      ring.gfx.scale.set(ring.startScale);
+    }
+  }
+
+  spawnClickRipple(x: number, y: number, color = 0xf7d79a): void {
+    this.spawnChimeRipple(x, y, color);
+  }
+
+  spawnSteamBurst(x: number, y: number, count = 4): void {
+    for (let i = 0; i < count; i++) {
+      const slot = this.acquire('steam');
+      slot.x = x + (Math.random() - 0.5) * 10;
+      slot.y = y - 2 + (Math.random() - 0.5) * 4;
+      slot.vx = (Math.random() - 0.5) * 14;
+      slot.vy = -22 - Math.random() * 14;
+      slot.drag = 0.97;
+      slot.startScale = 0.55 + Math.random() * 0.25;
+      slot.endScale = 1.35 + Math.random() * 0.3;
+      slot.alphaPeak = 0.58;
+      slot.life = 0.85 + Math.random() * 0.35;
+      slot.wobbleAmp = 8;
+      slot.wobbleFreq = 3.4;
+      slot.wobblePhase = i * 1.6;
+      slot.gfx.position.set(slot.x, slot.y);
+      slot.gfx.scale.set(slot.startScale);
+    }
+  }
+
+  spawnLeafRustle(x: number, y: number, color = 0x6ea86d, count = 5): void {
+    for (let i = 0; i < count; i++) {
+      const slot = this.acquire('petal');
+      slot.gfx.tint = color;
+      const ang = Math.random() * Math.PI * 2;
+      const speed = 24 + Math.random() * 34;
+      slot.x = x + Math.cos(ang) * 8;
+      slot.y = y + Math.sin(ang) * 8;
+      slot.vx = Math.cos(ang) * speed;
+      slot.vy = Math.sin(ang) * speed - 12;
+      slot.ay = 26;
+      slot.drag = 0.93;
+      slot.rotation = Math.random() * Math.PI * 2;
+      slot.vRot = (Math.random() - 0.5) * 4.5;
+      slot.startScale = 0.65 + Math.random() * 0.3;
+      slot.endScale = 0.42;
+      slot.alphaPeak = 0.88;
+      slot.life = 0.72 + Math.random() * 0.32;
+      slot.wobbleAmp = 10;
+      slot.wobbleFreq = 3.8;
+      slot.wobblePhase = Math.random() * Math.PI * 2;
+      slot.gfx.position.set(slot.x, slot.y);
+      slot.gfx.scale.set(slot.startScale);
+    }
+  }
+
+  spawnCuriosityPop(x: number, y: number): void {
+    const slot = this.acquire('exclaim');
+    slot.x = x;
+    slot.y = y - 16;
+    slot.vx = 0;
+    slot.vy = -18;
+    slot.drag = 0.92;
+    slot.startScale = 0.7;
+    slot.endScale = 1.15;
+    slot.alphaPeak = 0.95;
+    slot.life = 0.58;
+    slot.gfx.position.set(slot.x, slot.y);
+    slot.gfx.scale.set(slot.startScale);
+  }
+
+  /**
+   * Dispatches a structured PropParticleBurst emitted by interactive scene props.
+   */
+  spawnPropBurst(burst: PropParticleBurst): void {
+    const { kind, x, y, count, color } = burst;
+    switch (kind) {
+      case 'sparkle': {
+        const n = Math.max(1, count ?? 5);
+        for (let i = 0; i < n; i++) {
+          const slot = this.acquire('sparkle');
+          slot.gfx.tint = color ?? 0xffe49e;
+          const ang = (i / n) * Math.PI * 2 + Math.random() * 0.5;
+          const speed = 20 + Math.random() * 32;
+          slot.x = x + Math.cos(ang) * 4;
+          slot.y = y + Math.sin(ang) * 4;
+          slot.vx = Math.cos(ang) * speed;
+          slot.vy = Math.sin(ang) * speed - 14;
+          slot.drag = 0.94;
+          slot.rotation = Math.random() * Math.PI;
+          slot.vRot = (Math.random() > 0.5 ? 1 : -1) * 2.6;
+          slot.startScale = 0.45 + Math.random() * 0.3;
+          slot.endScale = 0.96;
+          slot.alphaPeak = 0.92;
+          slot.life = 0.62 + Math.random() * 0.25;
+          slot.gfx.position.set(slot.x, slot.y);
+          slot.gfx.scale.set(slot.startScale);
+        }
+        break;
+      }
+      case 'heart':
+        this.spawnHeartBurst(x, y, count ?? 3);
+        break;
+      case 'splash':
+        this.spawnWaterSplash(x, y, count ?? 6);
+        break;
+      case 'crumb':
+        this.spawnKibbleCrumbs(x, y, count ?? 5);
+        break;
+      case 'steam':
+        this.spawnSteamBurst(x, y, count ?? 4);
+        break;
+      case 'leaf':
+        this.spawnLeafRustle(x, y, color ?? 0x6ea86d, count ?? 5);
+        break;
+      case 'chime':
+      case 'ripple':
+        this.spawnChimeRipple(x, y, color ?? (kind === 'ripple' ? 0x9ce2f5 : 0xf4cf84));
+        break;
+      case 'catnip':
+        this.spawnCatnipSparkles(x, y, count ?? 8);
+        break;
+      case 'note':
+        this.spawnMusicNotes(x, y, count ?? 2);
+        break;
+      case 'dust':
+      default:
+        this.spawnDustPuff(x, y, 0, -14);
+        break;
     }
   }
 
@@ -274,8 +642,6 @@ export class ParticleSystem extends Container {
       slot.vx = vx * 0.3 + Math.cos(jitterAngle) * spread;
       slot.vy = vy * 0.3 + Math.sin(jitterAngle) * spread;
       slot.drag = 0.88;
-      slot.rotation = 0;
-      slot.vRot = 0;
       slot.startScale = 0.45 + Math.random() * 0.25;
       slot.endScale = 1.15 + Math.random() * 0.3;
       slot.alphaPeak = 0.45;
@@ -287,7 +653,6 @@ export class ParticleSystem extends Container {
   }
 
   spawnScratchMarks(x: number, y: number, angleRad: number): void {
-    // 2-3 crisp angled claw-slash sparks
     const sparkCount = 2 + (Math.random() < 0.55 ? 1 : 0);
     for (let i = 0; i < sparkCount; i++) {
       const spread = (i - (sparkCount - 1) * 0.5) * 0.42 + (Math.random() - 0.5) * 0.28;
@@ -312,7 +677,6 @@ export class ParticleSystem extends Container {
       slot.gfx.alpha = slot.alphaPeak;
     }
 
-    // 2 tiny fleck dust puffs along angleRad
     for (let i = 0; i < 2; i++) {
       const spread = (Math.random() - 0.5) * 0.75;
       const moveAngle = angleRad + spread;
@@ -324,8 +688,6 @@ export class ParticleSystem extends Container {
       slot.vy = Math.sin(moveAngle) * speed;
       slot.ay = 28;
       slot.drag = 0.88;
-      slot.rotation = 0;
-      slot.vRot = 0;
       slot.startScale = 0.24 + Math.random() * 0.14;
       slot.endScale = 0.65 + Math.random() * 0.2;
       slot.alphaPeak = 0.5;

@@ -41,11 +41,13 @@ export interface MockDesktopIconsOptions {
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const TILE_WIDTH = 80;
 const TILE_HEIGHT = 84;
-const GRID_START_X = 28;
-const GRID_START_Y = 28;
-const GRID_COL_STEP = 104;
-const GRID_ROW_STEP = 102;
+const GRID_START_X = 24;
+const GRID_START_Y = 24;
+const GRID_COL_STEP = 100;
+const GRID_ROW_STEP = 96;
 const EDGE_MARGIN = 12;
+const FAB_SAFE_WIDTH = 96;
+const FAB_SAFE_HEIGHT = 96;
 
 const ICON_ART: Record<IconKind, readonly SvgPart[]> = {
   'bin-full': [
@@ -437,7 +439,6 @@ export class MockDesktopIcons {
       { label: 'Recycle Bin', kind: 'bin-full', isRecycleBin: true, isShortcut: false },
       { label: 'This PC', kind: 'this-pc', isRecycleBin: false, isShortcut: false },
       { label: 'Projects', kind: 'folder', isRecycleBin: false, isShortcut: true },
-      { label: 'Screenshots', kind: 'screenshots', isRecycleBin: false, isShortcut: true },
       { label: 'Notes', kind: 'notes', isRecycleBin: false, isShortcut: true },
       { label: 'Music', kind: 'music', isRecycleBin: false, isShortcut: true },
       { label: 'NekoScape', kind: 'nekoscape', isRecycleBin: false, isShortcut: true },
@@ -544,14 +545,16 @@ export class MockDesktopIcons {
       if (!this.activeDrag || this.activeDrag.record !== record || this.activeDrag.pointerId !== e.pointerId) {
         return;
       }
-      const maxX = Math.max(EDGE_MARGIN, this.viewportWidth - record.width - EDGE_MARGIN);
-      const maxY = Math.max(EDGE_MARGIN, this.viewportHeight - record.height - EDGE_MARGIN);
-      const nextX = Math.round(clamp(e.clientX - this.activeDrag.grabOffsetX, EDGE_MARGIN, maxX));
-      const nextY = Math.round(clamp(e.clientY - this.activeDrag.grabOffsetY, EDGE_MARGIN, maxY));
+      const next = this.resolveSafePosition(
+        e.clientX - this.activeDrag.grabOffsetX,
+        e.clientY - this.activeDrag.grabOffsetY,
+        record.width,
+        record.height,
+      );
 
-      if (nextX !== record.x || nextY !== record.y) {
-        record.x = nextX;
-        record.y = nextY;
+      if (next.x !== record.x || next.y !== record.y) {
+        record.x = next.x;
+        record.y = next.y;
         this.applyTileTransform(record);
         this.activeDrag.dirty = true;
         this.scheduleDragIconsEmit();
@@ -592,10 +595,9 @@ export class MockDesktopIcons {
 
       e.preventDefault();
       this.notifyInteract();
-      const maxX = Math.max(EDGE_MARGIN, this.viewportWidth - record.width - EDGE_MARGIN);
-      const maxY = Math.max(EDGE_MARGIN, this.viewportHeight - record.height - EDGE_MARGIN);
-      record.x = Math.round(clamp(record.x + dx, EDGE_MARGIN, maxX));
-      record.y = Math.round(clamp(record.y + dy, EDGE_MARGIN, maxY));
+      const next = this.resolveSafePosition(record.x + dx, record.y + dy, record.width, record.height);
+      record.x = next.x;
+      record.y = next.y;
       this.applyTileTransform(record);
       this.emitIconsChange(false);
     });
@@ -652,21 +654,60 @@ export class MockDesktopIcons {
     }));
   }
 
+  private overlapsFabZone(x: number, y: number, width: number, height: number): boolean {
+    const fabLeft = Math.max(EDGE_MARGIN, this.viewportWidth - FAB_SAFE_WIDTH);
+    const fabTop = Math.max(EDGE_MARGIN, this.viewportHeight - FAB_SAFE_HEIGHT);
+    return rectsOverlap(x, y, width, height, fabLeft, fabTop, FAB_SAFE_WIDTH, FAB_SAFE_HEIGHT);
+  }
+
+  private resolveSafePosition(
+    rawX: number,
+    rawY: number,
+    width: number,
+    height: number,
+  ): { x: number; y: number } {
+    const maxX = Math.max(EDGE_MARGIN, this.viewportWidth - width - EDGE_MARGIN);
+    const maxY = Math.max(EDGE_MARGIN, this.viewportHeight - height - EDGE_MARGIN);
+    let x = Math.round(clamp(rawX, EDGE_MARGIN, maxX));
+    let y = Math.round(clamp(rawY, EDGE_MARGIN, maxY));
+
+    if (this.overlapsFabZone(x, y, width, height)) {
+      const fabLeft = Math.max(EDGE_MARGIN, this.viewportWidth - FAB_SAFE_WIDTH);
+      const fabTop = Math.max(EDGE_MARGIN, this.viewportHeight - FAB_SAFE_HEIGHT);
+      const pushLeftX = Math.max(EDGE_MARGIN, fabLeft - width - 8);
+      const pushUpY = Math.max(EDGE_MARGIN, fabTop - height - 8);
+
+      const dx = Math.abs(x - pushLeftX);
+      const dy = Math.abs(y - pushUpY);
+      if (dy <= dx) {
+        y = Math.round(pushUpY);
+      } else {
+        x = Math.round(pushLeftX);
+      }
+    }
+
+    return { x, y };
+  }
+
   public tidyIcons(emit = true): void {
     if (this.hiddenForNative) {
       return;
     }
 
-    const usableHeight = Math.max(TILE_HEIGHT + GRID_START_Y, this.viewportHeight - 96);
+    const usableHeight = Math.max(TILE_HEIGHT + GRID_START_Y, this.viewportHeight - FAB_SAFE_HEIGHT);
     const maxRows = Math.max(1, Math.floor((usableHeight - GRID_START_Y) / GRID_ROW_STEP));
 
     this.icons.forEach((icon, index) => {
       const col = Math.floor(index / maxRows);
       const row = index % maxRows;
-      const maxX = Math.max(EDGE_MARGIN, this.viewportWidth - icon.width - EDGE_MARGIN);
-      const maxY = Math.max(EDGE_MARGIN, this.viewportHeight - icon.height - EDGE_MARGIN);
-      icon.x = Math.round(clamp(GRID_START_X + col * GRID_COL_STEP, EDGE_MARGIN, maxX));
-      icon.y = Math.round(clamp(GRID_START_Y + row * GRID_ROW_STEP, EDGE_MARGIN, maxY));
+      const pos = this.resolveSafePosition(
+        GRID_START_X + col * GRID_COL_STEP,
+        GRID_START_Y + row * GRID_ROW_STEP,
+        icon.width,
+        icon.height,
+      );
+      icon.x = pos.x;
+      icon.y = pos.y;
       this.applyTileTransform(icon);
     });
 
@@ -692,27 +733,45 @@ export class MockDesktopIcons {
   }
 
   private findFreeSlot(): { x: number; y: number } {
-    const usableHeight = Math.max(TILE_HEIGHT + GRID_START_Y, this.viewportHeight - 96);
+    const usableHeight = Math.max(TILE_HEIGHT + GRID_START_Y, this.viewportHeight - FAB_SAFE_HEIGHT);
     const maxRows = Math.max(1, Math.floor((usableHeight - GRID_START_Y) / GRID_ROW_STEP));
     const maxCols = Math.max(2, Math.floor((this.viewportWidth - GRID_START_X) / GRID_COL_STEP));
 
     for (let col = 1; col < maxCols; col++) {
       for (let row = 0; row < maxRows; row++) {
-        const cx = Math.round(clamp(GRID_START_X + col * GRID_COL_STEP, EDGE_MARGIN, this.viewportWidth - TILE_WIDTH - EDGE_MARGIN));
-        const cy = Math.round(clamp(GRID_START_Y + row * GRID_ROW_STEP, EDGE_MARGIN, this.viewportHeight - TILE_HEIGHT - EDGE_MARGIN));
+        const candidate = this.resolveSafePosition(
+          GRID_START_X + col * GRID_COL_STEP,
+          GRID_START_Y + row * GRID_ROW_STEP,
+          TILE_WIDTH,
+          TILE_HEIGHT,
+        );
+        if (this.overlapsFabZone(candidate.x, candidate.y, TILE_WIDTH, TILE_HEIGHT)) {
+          continue;
+        }
         const collides = this.icons.some((other) =>
-          rectsOverlap(cx - 8, cy - 8, TILE_WIDTH + 16, TILE_HEIGHT + 16, other.x, other.y, other.width, other.height),
+          rectsOverlap(
+            candidate.x - 8,
+            candidate.y - 8,
+            TILE_WIDTH + 16,
+            TILE_HEIGHT + 16,
+            other.x,
+            other.y,
+            other.width,
+            other.height,
+          ),
         );
         if (!collides) {
-          return { x: cx, y: cy };
+          return candidate;
         }
       }
     }
 
-    return {
-      x: Math.round(clamp(GRID_START_X + GRID_COL_STEP, EDGE_MARGIN, this.viewportWidth - TILE_WIDTH - EDGE_MARGIN)),
-      y: Math.round(clamp(GRID_START_Y + GRID_ROW_STEP, EDGE_MARGIN, this.viewportHeight - TILE_HEIGHT - EDGE_MARGIN)),
-    };
+    return this.resolveSafePosition(
+      GRID_START_X + GRID_COL_STEP,
+      GRID_START_Y + GRID_ROW_STEP,
+      TILE_WIDTH,
+      TILE_HEIGHT,
+    );
   }
 
   public pulseRecycleBin(): AabbRect | null {
@@ -798,13 +857,10 @@ export class MockDesktopIcons {
 
     let moved = false;
     for (const icon of this.icons) {
-      const maxX = Math.max(EDGE_MARGIN, this.viewportWidth - icon.width - EDGE_MARGIN);
-      const maxY = Math.max(EDGE_MARGIN, this.viewportHeight - icon.height - EDGE_MARGIN);
-      const clampedX = Math.round(clamp(icon.x, EDGE_MARGIN, maxX));
-      const clampedY = Math.round(clamp(icon.y, EDGE_MARGIN, maxY));
-      if (clampedX !== icon.x || clampedY !== icon.y) {
-        icon.x = clampedX;
-        icon.y = clampedY;
+      const clamped = this.resolveSafePosition(icon.x, icon.y, icon.width, icon.height);
+      if (clamped.x !== icon.x || clamped.y !== icon.y) {
+        icon.x = clamped.x;
+        icon.y = clamped.y;
         this.applyTileTransform(icon);
         moved = true;
       }

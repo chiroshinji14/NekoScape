@@ -36,6 +36,10 @@ export class DynamicFsm<TState extends string, TContext> {
     this.states.set(state, hooks);
   }
 
+  hasState(state: TState): boolean {
+    return this.states.has(state);
+  }
+
   get state(): TState {
     return this._state;
   }

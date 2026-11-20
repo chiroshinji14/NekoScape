@@ -1,6 +1,13 @@
 import type { NekoSettings } from './simulation';
 
-export type { LightingMode, NekoSettings, SceneTheme } from './simulation';
+export type {
+  CatBreed,
+  CatBreedMode,
+  EffectiveLightingMode,
+  LightingMode,
+  NekoSettings,
+  SceneTheme,
+} from './simulation';
 
 export interface DesktopIconRect {
   id: number;
@@ -18,23 +25,27 @@ export interface MouseButtonsState {
   middle: boolean;
 }
 
-export type PowerStateReason = "occluded" | "user" | "active";
+export type PowerStateReason = 'occluded' | 'user' | 'active';
 
 export type SpawnActionType =
-  | "resetYarn"
-  | "toggleLaser"
-  | "rescanIcons"
-  | "toggleBox";
+  | 'resetYarn'
+  | 'toggleLaser'
+  | 'rescanIcons'
+  | 'toggleBox'
+  | 'dropTreat'
+  | 'toggleProps';
+
+export type PointerButton = 'left' | 'right';
 
 export interface IconUpdateMessage {
-  type: "ICON_UPDATE";
+  type: 'ICON_UPDATE';
   timestamp: number;
   dpiScale: number;
   icons: DesktopIconRect[];
 }
 
 export interface MouseRawMessage {
-  type: "MOUSE_RAW";
+  type: 'MOUSE_RAW';
   x: number;
   y: number;
   buttons: MouseButtonsState;
@@ -42,8 +53,16 @@ export interface MouseRawMessage {
   splitPrism: boolean;
 }
 
+export interface PointerClickMessage {
+  type: 'POINTER_CLICK';
+  x: number;
+  y: number;
+  button: PointerButton;
+  doubleClick?: boolean;
+}
+
 export interface NewFileEventMessage {
-  type: "NEW_FILE_EVENT";
+  type: 'NEW_FILE_EVENT';
   fileName: string;
   icon?: DesktopIconRect;
 }
@@ -56,37 +75,38 @@ export interface RecycleBinRect {
 }
 
 export interface RecycleBinEventMessage {
-  type: "RECYCLE_BIN_EVENT";
+  type: 'RECYCLE_BIN_EVENT';
   itemCount: number;
   emptied: boolean;
   binRect?: RecycleBinRect;
 }
 
 export interface TypingActivityMessage {
-  type: "TYPING_ACTIVITY";
+  type: 'TYPING_ACTIVITY';
   keysPerMinute: number;
   idleSeconds: number;
 }
 
 export interface SettingsUpdateMessage {
-  type: "SETTINGS_UPDATE";
+  type: 'SETTINGS_UPDATE';
   settings: NekoSettings;
 }
 
 export interface PowerStateMessage {
-  type: "POWER_STATE";
+  type: 'POWER_STATE';
   paused: boolean;
   reason: PowerStateReason;
 }
 
 export interface SpawnActionMessage {
-  type: "SPAWN_ACTION";
+  type: 'SPAWN_ACTION';
   action: SpawnActionType;
 }
 
 export type HostToRendererMessage =
   | IconUpdateMessage
   | MouseRawMessage
+  | PointerClickMessage
   | NewFileEventMessage
   | RecycleBinEventMessage
   | TypingActivityMessage
@@ -95,12 +115,12 @@ export type HostToRendererMessage =
   | SpawnActionMessage;
 
 export interface ReadyMessage {
-  type: "READY";
+  type: 'READY';
   rendererVersion: string;
 }
 
 export interface StatsUpdateMessage {
-  type: "STATS_UPDATE";
+  type: 'STATS_UPDATE';
   pounces: number;
   bonks: number;
   activeCats: number;
@@ -109,10 +129,16 @@ export interface StatsUpdateMessage {
 }
 
 export interface RequestIconRescanMessage {
-  type: "REQUEST_ICON_RESCAN";
+  type: 'REQUEST_ICON_RESCAN';
+}
+
+export interface SettingsChangedMessage {
+  type: 'SETTINGS_CHANGED';
+  settings: Partial<NekoSettings>;
 }
 
 export type RendererToHostMessage =
   | ReadyMessage
   | StatsUpdateMessage
-  | RequestIconRescanMessage;
+  | RequestIconRescanMessage
+  | SettingsChangedMessage;
