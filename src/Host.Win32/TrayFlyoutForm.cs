@@ -10,58 +10,60 @@ public sealed record TrayFlyoutState(
     bool LaserActive,
     bool Paused,
     int ActiveCats,
-    int Pounces);
+    int Pounces,
+    bool IsWindowedMode = false);
 
 public sealed class TrayFlyoutForm : Form
 {
     private static readonly Font FontBase = new("Segoe UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
-    private static readonly Font FontTitle = new("Segoe UI", 10.5f, FontStyle.Bold, GraphicsUnit.Point);
+    private static readonly Font FontTitle = new("Segoe UI", 11f, FontStyle.Bold, GraphicsUnit.Point);
     private static readonly Font FontStatus = new("Segoe UI", 8.25f, FontStyle.Regular, GraphicsUnit.Point);
     private static readonly Font FontSection = new("Segoe UI", 7.25f, FontStyle.Bold, GraphicsUnit.Point);
 
-    private readonly Label _statusLabel;
-    private readonly ModernSegmentedBar _tabSwitcher;
-    private readonly Panel _spacePage;
-    private readonly Panel _settingsPage;
+    internal static readonly (string Key, string Label, Color Swatch)[] BreedPickerOptions =
+    [
+        ("mix", "All Breeds", ModernTheme.AccentHoney),
+        ("persian", "Persian", Color.FromArgb(242, 224, 198)),
+        ("siamese", "Siamese", Color.FromArgb(218, 198, 174)),
+        ("british_shorthair", "British", Color.FromArgb(146, 158, 172)),
+        ("munchkin", "Munchkin", Color.FromArgb(228, 148, 86)),
+        ("sphynx", "Sphynx", Color.FromArgb(224, 176, 158)),
+        ("domestic_shorthair", "Domestic", Color.FromArgb(182, 128, 84)),
+    ];
 
-    // Space tab controls
-    private readonly Dictionary<string, ModernSceneCard> _sceneCards = new(StringComparer.OrdinalIgnoreCase);
+    private const int PadX = 18;
+    private const int ContentWidth = 328;
+
+    private readonly Label _statusLabel;
+    private readonly ModernSegmentedBar _sceneBar;
     private readonly ModernSegmentedBar _lightingBar;
     private readonly ModernStepperCard _catStepper;
+    private readonly ModernOptionPicker _breedPicker;
     private readonly ModernActionChip _laserChip;
     private readonly ModernActionChip _yarnChip;
     private readonly ModernActionChip _boxChip;
-    private readonly ModernActionChip _rescanChip;
-
-    // Settings tab controls
-    private readonly ModernSegmentedBar _fpsBar;
-    private readonly ModernSegmentedBar _napBar;
-    private readonly ModernToggleRow _webDockToggle;
-    private readonly ModernToggleRow _laserHotkeyToggle;
-    private readonly ModernToggleRow _shellReactionsToggle;
-    private readonly ModernToggleRow _debugToggle;
-
-    // Persistent footer controls
+    private readonly ModernActionChip _treatChip;
     private readonly ModernActionChip _pauseChip;
-    private readonly ModernActionChip _fabQuickChip;
-    private readonly ModernActionChip _openWindowChip;
+    private readonly ModernActionChip _modeChip;
+    private readonly ModernActionChip _settingsChip;
 
     private TrayFlyoutState _state;
     private Point _anchorCursor;
     private bool _closing;
     private bool _suppressEvents;
+    private bool _suppressDeactivate;
 
     public event Action<string>? SceneSelected;
     public event Action<string>? LightingSelected;
     public event Action<int>? CatCountChanged;
+    public event Action<string>? BreedModeSelected;
     public event Action? ToggleLaserRequested;
     public event Action? TossYarnRequested;
     public event Action? ToggleBoxRequested;
-    public event Action? RescanIconsRequested;
-    public event Action? ToggleWebDockRequested;
+    public event Action? DropTreatRequested;
     public event Action? TogglePauseRequested;
+    public event Action? ToggleWindowedModeRequested;
     public event Action? OpenSettingsRequested;
-    public event Action<NekoSettings>? SettingsMutated;
 
     public TrayFlyoutForm(TrayFlyoutState initialState)
     {
@@ -83,14 +85,14 @@ public sealed class TrayFlyoutForm : Form
         BackColor = ModernTheme.SurfaceWindow;
         ForeColor = ModernTheme.InkPrimary;
         Font = FontBase;
-        ClientSize = new Size(348, 456);
+        ClientSize = new Size(364, 498);
 
-        // Header title + status badge
+        // Header
         var titleLabel = new Label
         {
             Text = "NekoScape",
-            Location = new Point(16, 12),
-            Size = new Size(135, 22),
+            Location = new Point(PadX, 16),
+            Size = new Size(140, 24),
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = ModernTheme.InkPrimary,
             BackColor = Color.Transparent,
@@ -100,75 +102,38 @@ public sealed class TrayFlyoutForm : Form
         _statusLabel = new Label
         {
             Text = string.Empty,
-            Location = new Point(152, 13),
-            Size = new Size(180, 20),
+            Location = new Point(160, 18),
+            Size = new Size(186, 20),
             TextAlign = ContentAlignment.MiddleRight,
             ForeColor = ModernTheme.InkSecondary,
             BackColor = Color.Transparent,
             Font = FontStatus,
         };
 
-        // Page containers
-        _spacePage = new Panel
-        {
-            Location = new Point(16, 78),
-            Size = new Size(316, 326),
-            BackColor = ModernTheme.SurfaceWindow,
-        };
-
-        _settingsPage = new Panel
-        {
-            Location = new Point(16, 78),
-            Size = new Size(316, 326),
-            BackColor = ModernTheme.SurfaceWindow,
-            Visible = false,
-        };
-
-        // Two-Tab Switcher: Space | Settings
-        _tabSwitcher = new ModernSegmentedBar(
+        // 1. Scene Selector
+        var sceneHeader = CreateSectionLabel("SCENE", 52);
+        _sceneBar = new ModernSegmentedBar(
             [
-                ("space", "Space & Props"),
-                ("settings", "Settings"),
-            ],
-            isHeaderTab: true)
+                ("study", "Study"),
+                ("tatami", "Tatami"),
+                ("garden", "Garden"),
+                ("cafe", "Cafe"),
+            ])
         {
-            Location = new Point(16, 40),
-            Size = new Size(316, 32),
+            Location = new Point(PadX, 72),
+            Size = new Size(ContentWidth, 36),
+            AccessibleName = "Scene selector",
         };
-        _tabSwitcher.SelectionChanged += key =>
+        _sceneBar.SelectionChanged += theme =>
         {
-            bool showSpace = string.Equals(key, "space", StringComparison.OrdinalIgnoreCase);
-            _spacePage.Visible = showSpace;
-            _settingsPage.Visible = !showSpace;
-        };
-
-        // ============================================================
-        // SPACE TAB CONTENT
-        // ============================================================
-        _spacePage.Controls.Add(CreateSectionLabel("ENVIRONMENT SCENE", 0));
-
-        (string Key, string Title, string Sub, Color Floor, Color Rug, Color Accent, Point Pos)[] sceneSpecs =
-        [
-            ("study", "Study", "Oak & Espresso", Color.FromArgb(148, 98, 56), Color.FromArgb(228, 212, 190), Color.FromArgb(60, 145, 92), new Point(0, 18)),
-            ("tatami", "Tatami", "Bonsai & Tea", Color.FromArgb(164, 152, 92), Color.FromArgb(47, 74, 58), Color.FromArgb(240, 168, 184), new Point(162, 18)),
-            ("garden", "Garden", "Koi & Clover", Color.FromArgb(124, 118, 108), Color.FromArgb(72, 130, 74), Color.FromArgb(46, 134, 152), new Point(0, 78)),
-            ("cafe", "Cafe", "Bistro & Tree", Color.FromArgb(172, 138, 108), Color.FromArgb(196, 118, 76), Color.FromArgb(236, 224, 210), new Point(162, 78)),
-        ];
-
-        foreach (var spec in sceneSpecs)
-        {
-            var card = new ModernSceneCard(spec.Key, spec.Title, spec.Sub, spec.Floor, spec.Rug, spec.Accent)
+            if (!_suppressEvents)
             {
-                Location = spec.Pos,
-                Size = new Size(154, 54),
-                AccessibleName = $"Switch scene to {spec.Title}",
-            };
-            card.Clicked += key => SceneSelected?.Invoke(key);
-            _sceneCards[spec.Key] = card;
-            _spacePage.Controls.Add(card);
-        }
+                SceneSelected?.Invoke(theme);
+            }
+        };
 
-        _spacePage.Controls.Add(CreateSectionLabel("ATMOSPHERE LIGHTING", 140));
+        // 2. Lighting Selector
+        var lightingHeader = CreateSectionLabel("LIGHTING", 120);
         _lightingBar = new ModernSegmentedBar(
             [
                 ("auto", "Auto"),
@@ -177,8 +142,8 @@ public sealed class TrayFlyoutForm : Form
                 ("night", "Night"),
             ])
         {
-            Location = new Point(0, 158),
-            Size = new Size(316, 34),
+            Location = new Point(PadX, 140),
+            Size = new Size(ContentWidth, 36),
             AccessibleName = "Lighting mode selector",
         };
         _lightingBar.SelectionChanged += mode =>
@@ -188,13 +153,14 @@ public sealed class TrayFlyoutForm : Form
                 LightingSelected?.Invoke(mode);
             }
         };
-        _spacePage.Controls.Add(_lightingBar);
 
-        _catStepper = new ModernStepperCard("Cat Pack", 1, 12, _state.Settings.CatCount)
+        // 3. Cats & Breeds
+        var catsHeader = CreateSectionLabel("CATS & BREEDS", 188);
+        _catStepper = new ModernStepperCard("Cats", 1, 12, _state.Settings.CatCount)
         {
-            Location = new Point(0, 200),
-            Size = new Size(316, 46),
-            AccessibleName = "Cat pack count stepper",
+            Location = new Point(PadX, 208),
+            Size = new Size(ContentWidth, 46),
+            AccessibleName = "Cat count stepper",
         };
         _catStepper.ValueChanged += nextCount =>
         {
@@ -203,209 +169,125 @@ public sealed class TrayFlyoutForm : Form
                 CatCountChanged?.Invoke(nextCount);
             }
         };
-        _spacePage.Controls.Add(_catStepper);
 
-        _spacePage.Controls.Add(CreateSectionLabel("INTERACTIVE PROPS", 252));
-
-        _laserChip = new ModernActionChip("Laser Pointer", useCoralAccent: true)
+        _breedPicker = new ModernOptionPicker("Breed", BreedPickerOptions, _state.Settings.BreedMode)
         {
-            Location = new Point(0, 270),
-            Size = new Size(154, 26),
+            Location = new Point(PadX, 262),
+            Size = new Size(ContentWidth, 44),
+            AccessibleName = "Breed mix selector",
+        };
+        _breedPicker.MenuOpening += () => _suppressDeactivate = true;
+        _breedPicker.MenuClosed += () =>
+        {
+            _suppressDeactivate = false;
+            if (!IsDisposed && Visible)
+            {
+                Activate();
+            }
+        };
+        _breedPicker.SelectionChanged += breedMode =>
+        {
+            if (!_suppressEvents)
+            {
+                BreedModeSelected?.Invoke(breedMode);
+            }
+        };
+
+        // 4. Quick Play (2x2 generous chips)
+        var playHeader = CreateSectionLabel("QUICK PLAY", 318);
+        const int halfW = 159;
+        const int colGap = 10;
+
+        _laserChip = new ModernActionChip("Laser", useCoralAccent: true, glyph: ActionGlyph.Laser)
+        {
+            Location = new Point(PadX, 338),
+            Size = new Size(halfW, 36),
             AccessibleName = "Toggle laser pointer",
         };
         _laserChip.Click += (_, _) => ToggleLaserRequested?.Invoke();
 
-        _yarnChip = new ModernActionChip("Toss Yarn")
+        _yarnChip = new ModernActionChip("Toss Yarn", glyph: ActionGlyph.Yarn)
         {
-            Location = new Point(162, 270),
-            Size = new Size(154, 26),
+            Location = new Point(PadX + halfW + colGap, 338),
+            Size = new Size(halfW, 36),
             AccessibleName = "Toss yarn ball",
         };
         _yarnChip.Click += (_, _) => TossYarnRequested?.Invoke();
 
-        _boxChip = new ModernActionChip("Scene Box")
+        _boxChip = new ModernActionChip("Scene Box", glyph: ActionGlyph.Box)
         {
-            Location = new Point(0, 300),
-            Size = new Size(154, 26),
-            AccessibleName = "Toggle themed scene box",
+            Location = new Point(PadX, 384),
+            Size = new Size(halfW, 36),
+            AccessibleName = "Toggle cardboard box",
         };
         _boxChip.Click += (_, _) => ToggleBoxRequested?.Invoke();
 
-        _rescanChip = new ModernActionChip("Rescan Icons")
+        _treatChip = new ModernActionChip("Drop Treat", glyph: ActionGlyph.Treat)
         {
-            Location = new Point(162, 300),
-            Size = new Size(154, 26),
-            AccessibleName = "Rescan desktop icons",
+            Location = new Point(PadX + halfW + colGap, 384),
+            Size = new Size(halfW, 36),
+            AccessibleName = "Drop cat treat",
         };
-        _rescanChip.Click += (_, _) => RescanIconsRequested?.Invoke();
+        _treatChip.Click += (_, _) => DropTreatRequested?.Invoke();
 
-        _spacePage.Controls.Add(_laserChip);
-        _spacePage.Controls.Add(_yarnChip);
-        _spacePage.Controls.Add(_boxChip);
-        _spacePage.Controls.Add(_rescanChip);
+        // 5. Subtle Bottom Footer Bar
+        const int footerW = 104;
+        const int footerGap = 8;
 
-        // ============================================================
-        // SETTINGS TAB CONTENT
-        // ============================================================
-        _settingsPage.Controls.Add(CreateSectionLabel("FRAME RATE CAP", 0));
-        _fpsBar = new ModernSegmentedBar(
-            [
-                ("30", "30 FPS"),
-                ("60", "60 FPS"),
-                ("0", "Uncapped"),
-            ])
+        _pauseChip = new ModernActionChip("Pause", glyph: ActionGlyph.Pause)
         {
-            Location = new Point(0, 18),
-            Size = new Size(316, 32),
-            AccessibleName = "Frame rate cap selector",
-        };
-        _fpsBar.SelectionChanged += key =>
-        {
-            if (_suppressEvents)
-            {
-                return;
-            }
-            int fps = int.TryParse(key, out int parsed) ? parsed : 60;
-            MutateSetting(s => s.FpsCap = fps);
-        };
-        _settingsPage.Controls.Add(_fpsBar);
-
-        _settingsPage.Controls.Add(CreateSectionLabel("IDLE NAP TIMEOUT", 56));
-        _napBar = new ModernSegmentedBar(
-            [
-                ("1", "1m"),
-                ("5", "5m"),
-                ("15", "15m"),
-                ("30", "30m"),
-            ])
-        {
-            Location = new Point(0, 74),
-            Size = new Size(316, 32),
-            AccessibleName = "Idle nap timeout selector",
-        };
-        _napBar.SelectionChanged += key =>
-        {
-            if (_suppressEvents)
-            {
-                return;
-            }
-            int mins = int.TryParse(key, out int parsed) ? parsed : 5;
-            MutateSetting(s => s.IdleNapMinutes = mins);
-        };
-        _settingsPage.Controls.Add(_napBar);
-
-        _settingsPage.Controls.Add(CreateSectionLabel("BEHAVIOR & OVERLAYS", 112));
-
-        _webDockToggle = new ModernToggleRow("On-Wallpaper Web FAB", "Bottom-right floating control button", _state.Settings.ShowToyDock)
-        {
-            Location = new Point(0, 130),
-            Size = new Size(316, 44),
-        };
-        _webDockToggle.CheckedChanged += _ =>
-        {
-            if (!_suppressEvents)
-            {
-                ToggleWebDockRequested?.Invoke();
-            }
-        };
-
-        _laserHotkeyToggle = new ModernToggleRow("Laser Pointer Hotkeys", "Hold Alt or press Ctrl+Alt+L", _state.Settings.EnableLaserHotkey)
-        {
-            Location = new Point(0, 178),
-            Size = new Size(316, 44),
-        };
-        _laserHotkeyToggle.CheckedChanged += enabled =>
-        {
-            if (!_suppressEvents)
-            {
-                MutateSetting(s => s.EnableLaserHotkey = enabled);
-            }
-        };
-
-        _shellReactionsToggle = new ModernToggleRow("Desktop Shell Reactions", "Cats investigate new files & Recycle Bin", _state.Settings.EnableShellReactions)
-        {
-            Location = new Point(0, 226),
-            Size = new Size(316, 44),
-        };
-        _shellReactionsToggle.CheckedChanged += enabled =>
-        {
-            if (!_suppressEvents)
-            {
-                MutateSetting(s => s.EnableShellReactions = enabled);
-            }
-        };
-
-        _debugToggle = new ModernToggleRow("Debug Wireframes", "Render collision AABBs & cat state vectors", _state.Settings.DebugMode)
-        {
-            Location = new Point(0, 274),
-            Size = new Size(316, 44),
-        };
-        _debugToggle.CheckedChanged += enabled =>
-        {
-            if (!_suppressEvents)
-            {
-                MutateSetting(s => s.DebugMode = enabled);
-            }
-        };
-
-        _settingsPage.Controls.Add(_webDockToggle);
-        _settingsPage.Controls.Add(_laserHotkeyToggle);
-        _settingsPage.Controls.Add(_shellReactionsToggle);
-        _settingsPage.Controls.Add(_debugToggle);
-
-        // ============================================================
-        // PERSISTENT FOOTER BAR
-        // ============================================================
-        _pauseChip = new ModernActionChip("Pause")
-        {
-            Location = new Point(16, 412),
-            Size = new Size(100, 30),
+            Location = new Point(PadX, 446),
+            Size = new Size(footerW, 34),
             AccessibleName = "Pause or resume simulation",
         };
         _pauseChip.Click += (_, _) => TogglePauseRequested?.Invoke();
 
-        _fabQuickChip = new ModernActionChip("Web FAB")
+        _modeChip = new ModernActionChip("Windowed", glyph: ActionGlyph.Window)
         {
-            Location = new Point(124, 412),
-            Size = new Size(100, 30),
-            AccessibleName = "Toggle on-wallpaper web button",
+            Location = new Point(PadX + footerW + footerGap, 446),
+            Size = new Size(footerW, 34),
+            AccessibleName = "Toggle windowed or wallpaper mode",
         };
-        _fabQuickChip.Click += (_, _) => ToggleWebDockRequested?.Invoke();
+        _modeChip.Click += (_, _) =>
+        {
+            CloseSafely();
+            ToggleWindowedModeRequested?.Invoke();
+        };
 
-        _openWindowChip = new ModernActionChip("Window\u2026")
+        _settingsChip = new ModernActionChip("Settings\u2026", glyph: ActionGlyph.Settings)
         {
-            Location = new Point(232, 412),
-            Size = new Size(100, 30),
-            AccessibleName = "Open standalone settings window",
+            Location = new Point(PadX + (footerW + footerGap) * 2, 446),
+            Size = new Size(footerW, 34),
+            AccessibleName = "Open settings",
         };
-        _openWindowChip.Click += (_, _) =>
+        _settingsChip.Click += (_, _) =>
         {
             CloseSafely();
             OpenSettingsRequested?.Invoke();
         };
 
-        Controls.Add(titleLabel);
-        Controls.Add(_statusLabel);
-        Controls.Add(_tabSwitcher);
-        Controls.Add(_spacePage);
-        Controls.Add(_settingsPage);
-        Controls.Add(_pauseChip);
-        Controls.Add(_fabQuickChip);
-        Controls.Add(_openWindowChip);
+        Controls.AddRange([
+            titleLabel,
+            _statusLabel,
+            sceneHeader,
+            _sceneBar,
+            lightingHeader,
+            _lightingBar,
+            catsHeader,
+            _catStepper,
+            _breedPicker,
+            playHeader,
+            _laserChip,
+            _yarnChip,
+            _boxChip,
+            _treatChip,
+            _pauseChip,
+            _modeChip,
+            _settingsChip,
+        ]);
 
         ResumeLayout(performLayout: false);
-
         ApplyStateVisuals();
-    }
-
-    private void MutateSetting(Action<NekoSettings> mutator)
-    {
-        NekoSettings clone = _state.Settings.Clone();
-        mutator(clone);
-        NekoSettings normalized = clone.Normalized();
-        _state = _state with { Settings = normalized };
-        ApplyStateVisuals();
-        SettingsMutated?.Invoke(normalized);
     }
 
     public void PrepareAnchor(Point cursorScreenPoint)
@@ -482,7 +364,10 @@ public sealed class TrayFlyoutForm : Form
     protected override void OnDeactivate(EventArgs e)
     {
         base.OnDeactivate(e);
-        CloseSafely();
+        if (!_suppressDeactivate)
+        {
+            CloseSafely();
+        }
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -499,6 +384,16 @@ public sealed class TrayFlyoutForm : Form
     {
         base.OnPaint(e);
         ModernTheme.ConfigureHighQuality(e.Graphics);
+
+        // Compute divider dynamically from scaled controls so it stays centered at 125%-200% DPI.
+        int padX = _sceneBar.Left;
+        int dividerY = (_boxChip.Bottom + _pauseChip.Top) / 2;
+        using (Pen dividerPen = new(ModernTheme.Divider, 1f))
+        {
+            e.Graphics.DrawLine(dividerPen, padX, dividerY, ClientSize.Width - padX, dividerY);
+        }
+
+        // Crisp rounded outer rim
         RectangleF borderRect = new(0.5f, 0.5f, ClientSize.Width - 1.5f, ClientSize.Height - 1.5f);
         using GraphicsPath path = ModernTheme.CreateRoundedRect(borderRect, 11f);
         using Pen borderPen = new(ModernTheme.BorderOuter, 1.25f);
@@ -524,49 +419,29 @@ public sealed class TrayFlyoutForm : Form
             NekoSettings settings = _state.Settings;
             string scene = NekoSettings.NormalizeSceneTheme(settings.SceneTheme);
             string lighting = NekoSettings.NormalizeLightingMode(settings.LightingMode);
+            string breedMode = NekoSettings.NormalizeBreedMode(settings.BreedMode);
 
-            string statusPart = _state.Paused
-                ? "Paused"
-                : $"{_state.Pounces} pounces";
             int shownCats = _state.ActiveCats > 0 ? _state.ActiveCats : settings.CatCount;
-            _statusLabel.Text = $"{shownCats} cats \u00b7 {statusPart}";
+            string modeStatus = _state.Paused
+                ? "Paused"
+                : (_state.IsWindowedMode ? "Windowed" : "Wallpaper");
+            _statusLabel.Text = $"{shownCats} cats \u00b7 {modeStatus}";
 
-            foreach (KeyValuePair<string, ModernSceneCard> kvp in _sceneCards)
-            {
-                kvp.Value.Selected = string.Equals(kvp.Key, scene, StringComparison.OrdinalIgnoreCase);
-            }
-
+            _sceneBar.SelectedKey = scene;
             _lightingBar.SelectedKey = lighting;
             _catStepper.Value = settings.CatCount;
+            _breedPicker.SelectedKey = breedMode;
 
             _laserChip.Active = _state.LaserActive;
-            _laserChip.ChipLabel = _state.LaserActive ? "Laser: ON" : "Laser Pointer";
-
-            string fpsKey = settings.FpsCap switch
-            {
-                <= 0 => "0",
-                <= 30 => "30",
-                _ => "60",
-            };
-            _fpsBar.SelectedKey = fpsKey;
-
-            string napKey = settings.IdleNapMinutes switch
-            {
-                <= 1 => "1",
-                <= 7 => "5",
-                <= 20 => "15",
-                _ => "30",
-            };
-            _napBar.SelectedKey = napKey;
-
-            _webDockToggle.Checked = settings.ShowToyDock;
-            _laserHotkeyToggle.Checked = settings.EnableLaserHotkey;
-            _shellReactionsToggle.Checked = settings.EnableShellReactions;
-            _debugToggle.Checked = settings.DebugMode;
+            _laserChip.ChipLabel = _state.LaserActive ? "Laser On" : "Laser";
 
             _pauseChip.ChipLabel = _state.Paused ? "Resume" : "Pause";
+            _pauseChip.Glyph = _state.Paused ? ActionGlyph.Play : ActionGlyph.Pause;
             _pauseChip.Active = _state.Paused;
-            _fabQuickChip.Active = settings.ShowToyDock;
+
+            _modeChip.ChipLabel = _state.IsWindowedMode ? "Wallpaper" : "Windowed";
+            _modeChip.Glyph = _state.IsWindowedMode ? ActionGlyph.Wallpaper : ActionGlyph.Window;
+            _modeChip.Active = false;
         }
         finally
         {
@@ -577,8 +452,8 @@ public sealed class TrayFlyoutForm : Form
     private static Label CreateSectionLabel(string text, int y) => new()
     {
         Text = text,
-        Location = new Point(2, y),
-        Size = new Size(312, 16),
+        Location = new Point(PadX + 2, y),
+        Size = new Size(ContentWidth - 4, 16),
         TextAlign = ContentAlignment.MiddleLeft,
         ForeColor = ModernTheme.InkMuted,
         BackColor = Color.Transparent,

@@ -6,24 +6,41 @@ using System.Windows.Forms;
 
 namespace NekoScape.Host.Settings;
 
+internal enum ActionGlyph
+{
+    None,
+    Laser,
+    Yarn,
+    Box,
+    Treat,
+    Pause,
+    Play,
+    Window,
+    Wallpaper,
+    Settings,
+    Refresh,
+}
+
 internal static class ModernTheme
 {
-    public static readonly Color SurfaceWindow = Color.FromArgb(24, 17, 14);
-    public static readonly Color SurfaceCard = Color.FromArgb(37, 27, 22);
-    public static readonly Color SurfaceCardHover = Color.FromArgb(48, 35, 28);
-    public static readonly Color SurfaceCardActive = Color.FromArgb(56, 39, 27);
-    public static readonly Color SurfaceRecessed = Color.FromArgb(16, 11, 9);
-    public static readonly Color BorderOuter = Color.FromArgb(84, 60, 46);
-    public static readonly Color BorderSubtle = Color.FromArgb(62, 45, 36);
-    public static readonly Color BorderHover = Color.FromArgb(118, 86, 66);
+    public static readonly Color SurfaceWindow = Color.FromArgb(24, 18, 15);
+    public static readonly Color SurfaceCard = Color.FromArgb(36, 27, 22);
+    public static readonly Color SurfaceCardHover = Color.FromArgb(48, 36, 29);
+    public static readonly Color SurfaceCardActive = Color.FromArgb(56, 40, 28);
+    public static readonly Color SurfaceRecessed = Color.FromArgb(17, 12, 10);
+    public static readonly Color BorderOuter = Color.FromArgb(84, 62, 48);
+    public static readonly Color BorderSubtle = Color.FromArgb(60, 44, 35);
+    public static readonly Color BorderHover = Color.FromArgb(120, 88, 68);
+    public static readonly Color Divider = Color.FromArgb(50, 37, 30);
     public static readonly Color AccentHoney = Color.FromArgb(232, 169, 98);
-    public static readonly Color AccentHoneyBright = Color.FromArgb(244, 188, 122);
+    public static readonly Color AccentHoneyBright = Color.FromArgb(244, 190, 124);
     public static readonly Color AccentCoral = Color.FromArgb(224, 94, 74);
-    public static readonly Color InkPrimary = Color.FromArgb(247, 238, 226);
-    public static readonly Color InkSecondary = Color.FromArgb(196, 174, 152);
-    public static readonly Color InkMuted = Color.FromArgb(136, 114, 96);
+    public static readonly Color AccentSage = Color.FromArgb(124, 186, 134);
+    public static readonly Color InkPrimary = Color.FromArgb(247, 239, 228);
+    public static readonly Color InkSecondary = Color.FromArgb(196, 176, 156);
+    public static readonly Color InkMuted = Color.FromArgb(142, 120, 102);
     public static readonly Color InkDisabled = Color.FromArgb(112, 92, 78);
-    public static readonly Color InkOnAccent = Color.FromArgb(31, 20, 13);
+    public static readonly Color InkOnAccent = Color.FromArgb(30, 20, 13);
 
     public static GraphicsPath CreateRoundedRect(RectangleF rect, float radius)
     {
@@ -54,6 +71,14 @@ internal static class ModernTheme
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
     }
+
+    public static void DrawFocusRing(Graphics g, RectangleF rect, float radius)
+    {
+        RectangleF focusRect = RectangleF.Inflate(rect, -1f, -1f);
+        using GraphicsPath path = CreateRoundedRect(focusRect, Math.Max(2f, radius - 1f));
+        using Pen focusPen = new(AccentHoneyBright, 1.5f);
+        g.DrawPath(focusPen, path);
+    }
 }
 
 internal sealed class ModernSegmentedBar : Control
@@ -81,8 +106,9 @@ internal sealed class ModernSegmentedBar : Control
             ControlStyles.ResizeRedraw |
             ControlStyles.Selectable,
             true);
+        TabStop = true;
         Cursor = Cursors.Hand;
-        Height = isHeaderTab ? 32 : 34;
+        Height = isHeaderTab ? 34 : 36;
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -99,6 +125,57 @@ internal sealed class ModernSegmentedBar : Control
                 _selectedKey = resolved;
                 Invalidate();
             }
+        }
+    }
+
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        base.OnLostFocus(e);
+        Invalidate();
+    }
+
+    protected override bool IsInputKey(Keys keyData)
+    {
+        if (keyData is Keys.Left or Keys.Right or Keys.Home or Keys.End)
+        {
+            return true;
+        }
+        return base.IsInputKey(keyData);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (_items.Count == 0)
+        {
+            return;
+        }
+
+        int currentIdx = _items.FindIndex(item => string.Equals(item.Key, _selectedKey, StringComparison.OrdinalIgnoreCase));
+        if (currentIdx < 0)
+        {
+            currentIdx = 0;
+        }
+
+        int nextIdx = e.KeyCode switch
+        {
+            Keys.Left => (currentIdx - 1 + _items.Count) % _items.Count,
+            Keys.Right => (currentIdx + 1) % _items.Count,
+            Keys.Home => 0,
+            Keys.End => _items.Count - 1,
+            _ => -1,
+        };
+
+        if (nextIdx >= 0 && nextIdx != currentIdx)
+        {
+            SelectByIndex(nextIdx);
+            e.Handled = true;
         }
     }
 
@@ -134,13 +211,18 @@ internal sealed class ModernSegmentedBar : Control
         int idx = GetIndexAt(e.Location);
         if (idx >= 0 && idx < _items.Count)
         {
-            string key = _items[idx].Key;
-            if (!string.Equals(_selectedKey, key, StringComparison.OrdinalIgnoreCase))
-            {
-                _selectedKey = key;
-                Invalidate();
-                SelectionChanged?.Invoke(key);
-            }
+            SelectByIndex(idx);
+        }
+    }
+
+    private void SelectByIndex(int idx)
+    {
+        string key = _items[idx].Key;
+        if (!string.Equals(_selectedKey, key, StringComparison.OrdinalIgnoreCase))
+        {
+            _selectedKey = key;
+            Invalidate();
+            SelectionChanged?.Invoke(key);
         }
     }
 
@@ -164,7 +246,7 @@ internal sealed class ModernSegmentedBar : Control
         ModernTheme.ConfigureHighQuality(g);
         g.Clear(Parent?.BackColor ?? ModernTheme.SurfaceWindow);
 
-        RectangleF outerRect = new(0.5f, 0.5f, Width - 1f, Height - 1f);
+        RectangleF outerRect = new(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
         float outerRadius = _isHeaderTab ? 9f : 10f;
 
         using (GraphicsPath outerPath = ModernTheme.CreateRoundedRect(outerRect, outerRadius))
@@ -185,8 +267,8 @@ internal sealed class ModernSegmentedBar : Control
         float segW = availW / _items.Count;
         float segH = Height - pad * 2f;
 
-        using Font activeFont = new("Segoe UI", _isHeaderTab ? 8.5f : 8.75f, FontStyle.Bold, GraphicsUnit.Point);
-        using Font normalFont = new("Segoe UI", _isHeaderTab ? 8.5f : 8.75f, FontStyle.Regular, GraphicsUnit.Point);
+        using Font activeFont = new("Segoe UI", _isHeaderTab ? 8.75f : 8.75f, FontStyle.Bold, GraphicsUnit.Point);
+        using Font normalFont = new("Segoe UI", _isHeaderTab ? 8.75f : 8.75f, FontStyle.Regular, GraphicsUnit.Point);
         using StringFormat sf = new()
         {
             Alignment = StringAlignment.Center,
@@ -219,6 +301,11 @@ internal sealed class ModernSegmentedBar : Control
                     ? ModernTheme.InkOnAccent
                     : (isHovered ? ModernTheme.InkPrimary : ModernTheme.InkSecondary));
             g.DrawString(label, isSelected ? activeFont : normalFont, textBrush, segRect, sf);
+        }
+
+        if (Focused && ShowFocusCues)
+        {
+            ModernTheme.DrawFocusRing(g, outerRect, outerRadius);
         }
     }
 }
@@ -258,8 +345,9 @@ internal sealed class ModernSceneCard : Control
             ControlStyles.ResizeRedraw |
             ControlStyles.Selectable,
             true);
+        TabStop = true;
         Cursor = Cursors.Hand;
-        Size = new Size(156, 54);
+        Size = new Size(196, 56);
     }
 
     public string SceneKey => _sceneKey;
@@ -275,6 +363,28 @@ internal sealed class ModernSceneCard : Control
                 _selected = value;
                 Invalidate();
             }
+        }
+    }
+
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        base.OnLostFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.KeyCode is Keys.Space or Keys.Enter)
+        {
+            Clicked?.Invoke(_sceneKey);
+            e.Handled = true;
         }
     }
 
@@ -324,9 +434,11 @@ internal sealed class ModernSceneCard : Control
             g.DrawPath(borderPen, cardPath);
         }
 
-        // Visual mini-scene thumbnail swatch on the left
-        RectangleF swatchRect = new(9f, (Height - 34f) * 0.5f, 34f, 34f);
-        using (GraphicsPath swatchPath = ModernTheme.CreateRoundedRect(swatchRect, 8f))
+        // Visual mini-scene thumbnail swatch on the left (scaled for High-DPI)
+        float scale = Math.Max(1f, DeviceDpi / 96f);
+        float swatchSize = Math.Min(Height - 14f * scale, 34f * scale);
+        RectangleF swatchRect = new(10f * scale, (Height - swatchSize) * 0.5f, swatchSize, swatchSize);
+        using (GraphicsPath swatchPath = ModernTheme.CreateRoundedRect(swatchRect, 8f * scale))
         using (SolidBrush floorBrush = new(_floorColor))
         using (Pen swatchBorder = new(Color.FromArgb(90, 255, 255, 255), 1f))
         {
@@ -334,36 +446,53 @@ internal sealed class ModernSceneCard : Control
             g.DrawPath(swatchBorder, swatchPath);
         }
 
-        // Inner rug miniature
-        RectangleF innerRug = new(swatchRect.X + 5f, swatchRect.Y + 8f, 20f, 18f);
-        using (GraphicsPath rugPath = ModernTheme.CreateRoundedRect(innerRug, 4f))
+        RectangleF innerRug = new(
+            swatchRect.X + swatchSize * 0.15f,
+            swatchRect.Y + swatchSize * 0.24f,
+            swatchSize * 0.58f,
+            swatchSize * 0.52f);
+        using (GraphicsPath rugPath = ModernTheme.CreateRoundedRect(innerRug, 4f * scale))
         using (SolidBrush rugBrush = new(_rugColor))
         {
             g.FillPath(rugBrush, rugPath);
         }
 
-        // Prop accent badge dot inside swatch
+        float propDot = 7f * scale;
         using (SolidBrush propBrush = new(_propAccentColor))
         {
-            g.FillEllipse(propBrush, swatchRect.Right - 11f, swatchRect.Y + 4f, 7f, 7f);
+            g.FillEllipse(propBrush, swatchRect.Right - propDot - 4f * scale, swatchRect.Y + 4f * scale, propDot, propDot);
         }
 
-        // Active indicator dot in top-right corner
         if (_selected)
         {
+            float activeDot = 6f * scale;
             using SolidBrush activeDotBrush = new(ModernTheme.AccentHoney);
-            g.FillEllipse(activeDotBrush, Width - 14f, 8f, 6f, 6f);
+            g.FillEllipse(activeDotBrush, Width - activeDot - 8f * scale, 9f * scale, activeDot, activeDot);
         }
 
-        // Title & Subtitle
         using Font titleFont = new("Segoe UI", 9.25f, FontStyle.Bold, GraphicsUnit.Point);
-        using Font subFont = new("Segoe UI", 7.5f, FontStyle.Regular, GraphicsUnit.Point);
+        using Font subFont = new("Segoe UI", 7.75f, FontStyle.Regular, GraphicsUnit.Point);
         using SolidBrush titleBrush = new(_selected ? ModernTheme.AccentHoneyBright : ModernTheme.InkPrimary);
         using SolidBrush subBrush = new(ModernTheme.InkSecondary);
+        using StringFormat textSf = new()
+        {
+            Alignment = StringAlignment.Near,
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap,
+        };
 
-        float textX = swatchRect.Right + 8f;
-        g.DrawString(_title, titleFont, titleBrush, new PointF(textX, 9f));
-        g.DrawString(_subtitle, subFont, subBrush, new PointF(textX, 28f));
+        float textX = swatchRect.Right + 10f * scale;
+        float textW = Math.Max(24f, Width - textX - 10f * scale);
+        RectangleF titleRect = new(textX, Height * 0.12f, textW, Height * 0.42f);
+        RectangleF subRect = new(textX, Height * 0.52f, textW, Height * 0.36f);
+        g.DrawString(_title, titleFont, titleBrush, titleRect, textSf);
+        g.DrawString(_subtitle, subFont, subBrush, subRect, textSf);
+
+        if (Focused && ShowFocusCues)
+        {
+            ModernTheme.DrawFocusRing(g, cardRect, 10f);
+        }
     }
 }
 
@@ -393,7 +522,8 @@ internal sealed class ModernStepperCard : Control
             ControlStyles.ResizeRedraw |
             ControlStyles.Selectable,
             true);
-        Height = 48;
+        TabStop = true;
+        Height = 46;
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -411,9 +541,67 @@ internal sealed class ModernStepperCard : Control
         }
     }
 
-    private RectangleF GetMinusRect() => new(Width - 108f, (Height - 28f) * 0.5f, 28f, 28f);
-    private RectangleF GetValueRect() => new(Width - 76f, (Height - 28f) * 0.5f, 40f, 28f);
-    private RectangleF GetPlusRect() => new(Width - 32f, (Height - 28f) * 0.5f, 24f, 28f);
+    private float DpiScale => Math.Max(1f, DeviceDpi / 96f);
+    private RectangleF GetMinusRect()
+    {
+        float s = DpiScale;
+        float btn = 28f * s;
+        return new(Width - 110f * s, (Height - btn) * 0.5f, btn, btn);
+    }
+
+    private RectangleF GetValueRect()
+    {
+        float s = DpiScale;
+        float h = 28f * s;
+        return new(Width - 78f * s, (Height - h) * 0.5f, 38f * s, h);
+    }
+
+    private RectangleF GetPlusRect()
+    {
+        float s = DpiScale;
+        float btn = 28f * s;
+        return new(Width - 36f * s, (Height - btn) * 0.5f, btn, btn);
+    }
+
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        base.OnLostFocus(e);
+        Invalidate();
+    }
+
+    protected override bool IsInputKey(Keys keyData)
+    {
+        if (keyData is Keys.Left or Keys.Right or Keys.Up or Keys.Down)
+        {
+            return true;
+        }
+        return base.IsInputKey(keyData);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.KeyCode is Keys.Left or Keys.Down && _value > _min)
+        {
+            _value--;
+            Invalidate();
+            ValueChanged?.Invoke(_value);
+            e.Handled = true;
+        }
+        else if (e.KeyCode is Keys.Right or Keys.Up && _value < _max)
+        {
+            _value++;
+            Invalidate();
+            ValueChanged?.Invoke(_value);
+            e.Handled = true;
+        }
+    }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
@@ -487,36 +675,42 @@ internal sealed class ModernStepperCard : Control
             g.DrawPath(borderPen, cardPath);
         }
 
-        // Left title + progress meter bar
+        float scale = DpiScale;
+        RectangleF minusRect = GetMinusRect();
+        RectangleF valRect = GetValueRect();
+        RectangleF plusRect = GetPlusRect();
+
+        float leftX = 12f * scale;
+        float meterW = Math.Max(36f, minusRect.X - leftX - 12f * scale);
+
         using Font titleFont = new("Segoe UI", 9f, FontStyle.Bold, GraphicsUnit.Point);
         using SolidBrush titleBrush = new(ModernTheme.InkPrimary);
-        g.DrawString(_title, titleFont, titleBrush, new PointF(12f, 8f));
+        using StringFormat titleSf = new()
+        {
+            Alignment = StringAlignment.Near,
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap,
+        };
+        g.DrawString(_title, titleFont, titleBrush, new RectangleF(leftX, Height * 0.12f, meterW, Height * 0.46f), titleSf);
 
-        // Mini fill bar under title
-        float meterX = 12f;
-        float meterY = 31f;
-        float meterW = Math.Max(48f, Width - 134f);
-        float meterH = 5f;
-        RectangleF meterTrack = new(meterX, meterY, meterW, meterH);
-        using (GraphicsPath trackPath = ModernTheme.CreateRoundedRect(meterTrack, 2.5f))
+        float meterY = Height * 0.70f;
+        float meterH = 4.5f * scale;
+        RectangleF meterTrack = new(leftX, meterY, meterW, meterH);
+        using (GraphicsPath trackPath = ModernTheme.CreateRoundedRect(meterTrack, meterH * 0.5f))
         using (SolidBrush trackBrush = new(ModernTheme.SurfaceRecessed))
         {
             g.FillPath(trackBrush, trackPath);
         }
 
         float ratio = _max > _min ? (float)(_value - _min) / (_max - _min) : 1f;
-        float fillW = Math.Max(6f, meterW * Math.Clamp(ratio, 0f, 1f));
-        RectangleF meterFill = new(meterX, meterY, fillW, meterH);
-        using (GraphicsPath fillPath = ModernTheme.CreateRoundedRect(meterFill, 2.5f))
+        float fillW = Math.Max(6f * scale, meterW * Math.Clamp(ratio, 0f, 1f));
+        RectangleF meterFill = new(leftX, meterY, fillW, meterH);
+        using (GraphicsPath fillPath = ModernTheme.CreateRoundedRect(meterFill, meterH * 0.5f))
         using (SolidBrush fillBrush = new(ModernTheme.AccentHoney))
         {
             g.FillPath(fillBrush, fillPath);
         }
-
-        // Stepper buttons on right (using vector lines so '-' and '+' are always crisp & high-contrast)
-        RectangleF minusRect = new(Width - 108f, (Height - 28f) * 0.5f, 28f, 28f);
-        RectangleF valRect = new(Width - 76f, (Height - 28f) * 0.5f, 38f, 28f);
-        RectangleF plusRect = new(Width - 36f, (Height - 28f) * 0.5f, 28f, 28f);
 
         bool canDec = _value > _min;
         bool canInc = _value < _max;
@@ -524,7 +718,6 @@ internal sealed class ModernStepperCard : Control
         DrawStepButton(g, minusRect, isPlus: false, enabled: canDec, hovered: _hoveredPart == 1 && canDec);
         DrawStepButton(g, plusRect, isPlus: true, enabled: canInc, hovered: _hoveredPart == 2 && canInc);
 
-        // Center value pill
         using (GraphicsPath valPath = ModernTheme.CreateRoundedRect(valRect, 7f))
         using (SolidBrush valBg = new(ModernTheme.SurfaceRecessed))
         using (Pen valBorder = new(ModernTheme.BorderSubtle, 1f))
@@ -542,6 +735,11 @@ internal sealed class ModernStepperCard : Control
         };
         string display = string.IsNullOrEmpty(_unitSuffix) ? $"{_value}" : $"{_value}{_unitSuffix}";
         g.DrawString(display, valFont, valTextBrush, valRect, sf);
+
+        if (Focused && ShowFocusCues)
+        {
+            ModernTheme.DrawFocusRing(g, cardRect, 10f);
+        }
     }
 
     private static void DrawStepButton(Graphics g, RectangleF rect, bool isPlus, bool enabled, bool hovered)
@@ -566,7 +764,7 @@ internal sealed class ModernStepperCard : Control
 
         float cx = rect.X + rect.Width * 0.5f;
         float cy = rect.Y + rect.Height * 0.5f;
-        using Pen glyphPen = new(glyph, 1.85f)
+        using Pen glyphPen = new(glyph, 1.8f)
         {
             StartCap = LineCap.Round,
             EndCap = LineCap.Round,
@@ -579,18 +777,26 @@ internal sealed class ModernStepperCard : Control
     }
 }
 
-internal sealed class ModernActionChip : Control
+internal sealed class ModernOptionPicker : Control
 {
-    private string _label;
-    private bool _active;
-    private bool _useCoralAccent;
-    private bool _hovered;
-    private bool _pressed;
+    private readonly string _title;
+    private readonly List<(string Key, string Label, Color Swatch)> _options = [];
+    private int _selectedIndex;
+    private int _hoveredPart; // 0 = none, 1 = prev, 2 = pill, 3 = next
 
-    public ModernActionChip(string label, bool useCoralAccent = false)
+    public event Action<string>? SelectionChanged;
+    public event Action? MenuOpening;
+    public event Action? MenuClosed;
+
+    public ModernOptionPicker(
+        string title,
+        IEnumerable<(string Key, string Label, Color Swatch)> options,
+        string initialKey)
     {
-        _label = label;
-        _useCoralAccent = useCoralAccent;
+        _title = title;
+        _options.AddRange(options);
+        _selectedIndex = Math.Max(0, _options.FindIndex(o => string.Equals(o.Key, initialKey, StringComparison.OrdinalIgnoreCase)));
+
         SetStyle(
             ControlStyles.UserPaint |
             ControlStyles.AllPaintingInWmPaint |
@@ -598,6 +804,332 @@ internal sealed class ModernActionChip : Control
             ControlStyles.ResizeRedraw |
             ControlStyles.Selectable,
             true);
+        TabStop = true;
+        Height = 44;
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public string SelectedKey
+    {
+        get => _options.Count > 0 ? _options[_selectedIndex].Key : string.Empty;
+        set
+        {
+            int idx = _options.FindIndex(o => string.Equals(o.Key, value ?? string.Empty, StringComparison.OrdinalIgnoreCase));
+            int resolved = idx >= 0 ? idx : 0;
+            if (_selectedIndex != resolved)
+            {
+                _selectedIndex = resolved;
+                Invalidate();
+            }
+        }
+    }
+
+    private float DpiScale => Math.Max(1f, DeviceDpi / 96f);
+    private RectangleF GetPrevRect()
+    {
+        float s = DpiScale;
+        float h = 28f * s;
+        return new(Width - 196f * s, (Height - h) * 0.5f, 26f * s, h);
+    }
+
+    private RectangleF GetPillRect()
+    {
+        float s = DpiScale;
+        float h = 28f * s;
+        return new(Width - 166f * s, (Height - h) * 0.5f, 126f * s, h);
+    }
+
+    private RectangleF GetNextRect()
+    {
+        float s = DpiScale;
+        float h = 28f * s;
+        return new(Width - 36f * s, (Height - h) * 0.5f, 26f * s, h);
+    }
+
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        base.OnLostFocus(e);
+        Invalidate();
+    }
+
+    protected override bool IsInputKey(Keys keyData)
+    {
+        if (keyData is Keys.Left or Keys.Right or Keys.Down or Keys.Up)
+        {
+            return true;
+        }
+        return base.IsInputKey(keyData);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (_options.Count == 0)
+        {
+            return;
+        }
+
+        if (e.KeyCode == Keys.Left)
+        {
+            StepOption(-1);
+            e.Handled = true;
+        }
+        else if (e.KeyCode == Keys.Right)
+        {
+            StepOption(1);
+            e.Handled = true;
+        }
+        else if (e.KeyCode is Keys.Space or Keys.Enter or Keys.Down)
+        {
+            ShowSelectionMenu();
+            e.Handled = true;
+        }
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        int nextPart = 0;
+        if (GetPrevRect().Contains(e.Location)) nextPart = 1;
+        else if (GetPillRect().Contains(e.Location)) nextPart = 2;
+        else if (GetNextRect().Contains(e.Location)) nextPart = 3;
+
+        Cursor = nextPart != 0 ? Cursors.Hand : Cursors.Default;
+        if (nextPart != _hoveredPart)
+        {
+            _hoveredPart = nextPart;
+            Invalidate();
+        }
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        if (_hoveredPart != 0)
+        {
+            _hoveredPart = 0;
+            Invalidate();
+        }
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button != MouseButtons.Left || _options.Count == 0)
+        {
+            return;
+        }
+
+        if (GetPrevRect().Contains(e.Location))
+        {
+            StepOption(-1);
+        }
+        else if (GetNextRect().Contains(e.Location))
+        {
+            StepOption(1);
+        }
+        else if (GetPillRect().Contains(e.Location))
+        {
+            ShowSelectionMenu();
+        }
+    }
+
+    private void StepOption(int delta)
+    {
+        if (_options.Count <= 1)
+        {
+            return;
+        }
+
+        _selectedIndex = (_selectedIndex + delta + _options.Count) % _options.Count;
+        Invalidate();
+        SelectionChanged?.Invoke(_options[_selectedIndex].Key);
+    }
+
+    private void ShowSelectionMenu()
+    {
+        if (_options.Count == 0)
+        {
+            return;
+        }
+
+        var menu = new ContextMenuStrip
+        {
+            Renderer = new ModernMenuRenderer(),
+            ShowImageMargin = false,
+            ShowCheckMargin = true,
+            Font = new Font("Segoe UI", 9f, FontStyle.Regular, GraphicsUnit.Point),
+        };
+
+        for (int i = 0; i < _options.Count; i++)
+        {
+            int index = i;
+            var opt = _options[i];
+            var item = new ToolStripMenuItem(opt.Label)
+            {
+                Checked = index == _selectedIndex,
+                ForeColor = ModernTheme.InkPrimary,
+            };
+            item.Click += (_, _) =>
+            {
+                if (_selectedIndex != index)
+                {
+                    _selectedIndex = index;
+                    Invalidate();
+                    SelectionChanged?.Invoke(_options[_selectedIndex].Key);
+                }
+            };
+            menu.Items.Add(item);
+        }
+
+        menu.Closed += (_, _) =>
+        {
+            MenuClosed?.Invoke();
+            BeginInvoke(() => menu.Dispose());
+        };
+
+        MenuOpening?.Invoke();
+        RectangleF pill = GetPillRect();
+        menu.Show(this, new Point((int)pill.X, (int)pill.Bottom + 4));
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        Graphics g = e.Graphics;
+        ModernTheme.ConfigureHighQuality(g);
+        g.Clear(Parent?.BackColor ?? ModernTheme.SurfaceWindow);
+
+        RectangleF cardRect = new(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+        using (GraphicsPath cardPath = ModernTheme.CreateRoundedRect(cardRect, 10f))
+        using (SolidBrush cardBrush = new(ModernTheme.SurfaceCard))
+        using (Pen borderPen = new(ModernTheme.BorderSubtle, 1f))
+        {
+            g.FillPath(cardBrush, cardPath);
+            g.DrawPath(borderPen, cardPath);
+        }
+
+        var current = _options.Count > 0
+            ? _options[_selectedIndex]
+            : (Key: "mix", Label: "All Breeds", Swatch: ModernTheme.AccentHoney);
+
+        // Coat swatch indicator dot(s) on left
+        float dotY = (Height - 8f) * 0.5f;
+        if (string.Equals(current.Key, "mix", StringComparison.OrdinalIgnoreCase))
+        {
+            using SolidBrush b1 = new(Color.FromArgb(234, 198, 152));
+            using SolidBrush b2 = new(Color.FromArgb(148, 160, 174));
+            using SolidBrush b3 = new(Color.FromArgb(214, 134, 88));
+            g.FillEllipse(b1, 12f, dotY, 7f, 7f);
+            g.FillEllipse(b2, 17f, dotY, 7f, 7f);
+            g.FillEllipse(b3, 22f, dotY, 7f, 7f);
+        }
+        else
+        {
+            using SolidBrush swatchBrush = new(current.Swatch);
+            using Pen ringPen = new(Color.FromArgb(90, 255, 255, 255), 1f);
+            g.FillEllipse(swatchBrush, 12f, dotY - 0.5f, 9f, 9f);
+            g.DrawEllipse(ringPen, 12f, dotY - 0.5f, 9f, 9f);
+        }
+
+        using Font titleFont = new("Segoe UI", 9f, FontStyle.Bold, GraphicsUnit.Point);
+        using SolidBrush titleBrush = new(ModernTheme.InkPrimary);
+        using StringFormat leftSf = new() { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+        float labelX = string.Equals(current.Key, "mix", StringComparison.OrdinalIgnoreCase) ? 35f : 27f;
+        g.DrawString(_title, titleFont, titleBrush, new RectangleF(labelX, 0f, Width - 200f - labelX, Height), leftSf);
+
+        RectangleF prevRect = GetPrevRect();
+        RectangleF pillRect = GetPillRect();
+        RectangleF nextRect = GetNextRect();
+
+        DrawChevronButton(g, prevRect, isRight: false, hovered: _hoveredPart == 1);
+        DrawChevronButton(g, nextRect, isRight: true, hovered: _hoveredPart == 3);
+
+        bool pillHover = _hoveredPart == 2;
+        using (GraphicsPath pillPath = ModernTheme.CreateRoundedRect(pillRect, 7f))
+        using (SolidBrush pillBg = new(pillHover ? ModernTheme.SurfaceCardHover : ModernTheme.SurfaceRecessed))
+        using (Pen pillBorder = new(pillHover ? ModernTheme.AccentHoney : ModernTheme.BorderSubtle, 1f))
+        {
+            g.FillPath(pillBg, pillPath);
+            g.DrawPath(pillBorder, pillPath);
+        }
+
+        using Font valFont = new("Segoe UI", 8.5f, FontStyle.Bold, GraphicsUnit.Point);
+        using SolidBrush valBrush = new(ModernTheme.AccentHoneyBright);
+        using StringFormat centerSf = new()
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap,
+        };
+        g.DrawString(current.Label, valFont, valBrush, RectangleF.Inflate(pillRect, -4f, 0f), centerSf);
+
+        if (Focused && ShowFocusCues)
+        {
+            ModernTheme.DrawFocusRing(g, cardRect, 10f);
+        }
+    }
+
+    private static void DrawChevronButton(Graphics g, RectangleF rect, bool isRight, bool hovered)
+    {
+        Color bg = hovered ? ModernTheme.SurfaceCardHover : ModernTheme.SurfaceWindow;
+        Color border = hovered ? ModernTheme.AccentHoney : ModernTheme.BorderHover;
+        Color glyph = hovered ? ModernTheme.AccentHoneyBright : ModernTheme.InkPrimary;
+
+        using (GraphicsPath path = ModernTheme.CreateRoundedRect(rect, 7f))
+        using (SolidBrush brush = new(bg))
+        using (Pen pen = new(border, 1f))
+        {
+            g.FillPath(brush, path);
+            g.DrawPath(pen, path);
+        }
+
+        float cx = rect.X + rect.Width * 0.5f;
+        float cy = rect.Y + rect.Height * 0.5f;
+        float dir = isRight ? 1f : -1f;
+        using Pen penGlyph = new(glyph, 1.7f)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round,
+        };
+        g.DrawLines(penGlyph, [
+            new PointF(cx - 2.2f * dir, cy - 4f),
+            new PointF(cx + 2.2f * dir, cy),
+            new PointF(cx - 2.2f * dir, cy + 4f),
+        ]);
+    }
+}
+
+internal sealed class ModernActionChip : Control
+{
+    private string _label;
+    private bool _active;
+    private readonly bool _useCoralAccent;
+    private ActionGlyph _glyph;
+    private bool _hovered;
+    private bool _pressed;
+
+    public ModernActionChip(string label, bool useCoralAccent = false, ActionGlyph glyph = ActionGlyph.None)
+    {
+        _label = label;
+        _useCoralAccent = useCoralAccent;
+        _glyph = glyph;
+        SetStyle(
+            ControlStyles.UserPaint |
+            ControlStyles.AllPaintingInWmPaint |
+            ControlStyles.OptimizedDoubleBuffer |
+            ControlStyles.ResizeRedraw |
+            ControlStyles.Selectable,
+            true);
+        TabStop = true;
         Cursor = Cursors.Hand;
         Size = new Size(156, 36);
     }
@@ -627,6 +1159,42 @@ internal sealed class ModernActionChip : Control
                 _active = value;
                 Invalidate();
             }
+        }
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public ActionGlyph Glyph
+    {
+        get => _glyph;
+        set
+        {
+            if (_glyph != value)
+            {
+                _glyph = value;
+                Invalidate();
+            }
+        }
+    }
+
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        base.OnLostFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.KeyCode is Keys.Space or Keys.Enter)
+        {
+            OnClick(EventArgs.Empty);
+            e.Handled = true;
         }
     }
 
@@ -675,7 +1243,7 @@ internal sealed class ModernActionChip : Control
         RectangleF rect = new(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
         if (_pressed)
         {
-            rect.Inflate(-0.5f, -0.5f);
+            rect.Inflate(-0.6f, -0.6f);
         }
 
         Color accent = _useCoralAccent ? ModernTheme.AccentCoral : ModernTheme.AccentHoney;
@@ -704,12 +1272,6 @@ internal sealed class ModernActionChip : Control
             g.DrawPath(borderPen, path);
         }
 
-        if (_active && _useCoralAccent)
-        {
-            using SolidBrush dotBrush = new(ModernTheme.AccentCoral);
-            g.FillEllipse(dotBrush, 11f, (Height - 7f) * 0.5f, 7f, 7f);
-        }
-
         using Font font = new("Segoe UI", 8.75f, _active ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point);
         using SolidBrush fgBrush = new(fg);
         using StringFormat sf = new()
@@ -718,7 +1280,119 @@ internal sealed class ModernActionChip : Control
             LineAlignment = StringAlignment.Center,
             FormatFlags = StringFormatFlags.NoWrap,
         };
-        g.DrawString(_label, font, fgBrush, rect, sf);
+
+        if (_glyph != ActionGlyph.None)
+        {
+            SizeF textSize = g.MeasureString(_label, font);
+            float glyphSize = 13f;
+            float gap = 6f;
+            float totalW = glyphSize + gap + textSize.Width;
+            float startX = rect.X + Math.Max(10f, (rect.Width - totalW) * 0.5f);
+            float cy = rect.Y + rect.Height * 0.5f;
+
+            Color glyphColor = (_active && _useCoralAccent) ? ModernTheme.AccentCoral : fg;
+            DrawGlyph(g, _glyph, startX + glyphSize * 0.5f, cy, glyphColor);
+
+            RectangleF textRect = new(startX + glyphSize + gap, rect.Y, Math.Max(20f, rect.Right - (startX + glyphSize + gap) - 6f), rect.Height);
+            using StringFormat nearSf = new()
+            {
+                Alignment = StringAlignment.Near,
+                LineAlignment = StringAlignment.Center,
+                FormatFlags = StringFormatFlags.NoWrap,
+            };
+            g.DrawString(_label, font, fgBrush, textRect, nearSf);
+        }
+        else
+        {
+            g.DrawString(_label, font, fgBrush, rect, sf);
+        }
+
+        if (Focused && ShowFocusCues)
+        {
+            ModernTheme.DrawFocusRing(g, rect, 9f);
+        }
+    }
+
+    private static void DrawGlyph(Graphics g, ActionGlyph glyph, float cx, float cy, Color color)
+    {
+        using Pen pen = new(color, 1.5f)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round,
+        };
+        using SolidBrush brush = new(color);
+
+        switch (glyph)
+        {
+            case ActionGlyph.Laser:
+                g.DrawLine(pen, cx - 5f, cy + 4.5f, cx + 1.5f, cy - 2f);
+                g.FillEllipse(brush, cx + 1.8f, cy - 5.2f, 4.2f, 4.2f);
+                break;
+
+            case ActionGlyph.Yarn:
+                g.DrawEllipse(pen, cx - 5f, cy - 5f, 10f, 10f);
+                g.DrawArc(pen, cx - 4f, cy - 3.5f, 8f, 7f, 200, 150);
+                g.DrawLine(pen, cx + 2.5f, cy + 3.5f, cx + 6f, cy + 5.2f);
+                break;
+
+            case ActionGlyph.Box:
+                g.DrawRectangle(pen, cx - 5f, cy - 2.5f, 10f, 7.5f);
+                g.DrawLine(pen, cx - 5f, cy - 2.5f, cx - 2.5f, cy - 5.5f);
+                g.DrawLine(pen, cx + 5f, cy - 2.5f, cx + 2.5f, cy - 5.5f);
+                g.DrawLine(pen, cx - 2.5f, cy - 5.5f, cx + 2.5f, cy - 5.5f);
+                break;
+
+            case ActionGlyph.Treat:
+                // Minimal fish/treat silhouette
+                g.DrawEllipse(pen, cx - 5f, cy - 3.2f, 7.5f, 6.4f);
+                g.DrawLines(pen, [
+                    new PointF(cx + 2.5f, cy),
+                    new PointF(cx + 5.5f, cy - 3f),
+                    new PointF(cx + 5.5f, cy + 3f),
+                    new PointF(cx + 2.5f, cy),
+                ]);
+                break;
+
+            case ActionGlyph.Pause:
+                g.DrawLine(pen, cx - 2.3f, cy - 4.2f, cx - 2.3f, cy + 4.2f);
+                g.DrawLine(pen, cx + 2.3f, cy - 4.2f, cx + 2.3f, cy + 4.2f);
+                break;
+
+            case ActionGlyph.Play:
+                g.FillPolygon(brush, [
+                    new PointF(cx - 2.8f, cy - 4.5f),
+                    new PointF(cx + 4.5f, cy),
+                    new PointF(cx - 2.8f, cy + 4.5f),
+                ]);
+                break;
+
+            case ActionGlyph.Window:
+                g.DrawRectangle(pen, cx - 5.2f, cy - 4.2f, 10.4f, 8.4f);
+                g.DrawLine(pen, cx - 5.2f, cy - 1.5f, cx + 5.2f, cy - 1.5f);
+                break;
+
+            case ActionGlyph.Wallpaper:
+                g.DrawRectangle(pen, cx - 5.5f, cy - 4.5f, 11f, 7.5f);
+                g.DrawLine(pen, cx - 2.5f, cy + 5f, cx + 2.5f, cy + 5f);
+                break;
+
+            case ActionGlyph.Settings:
+                g.DrawLine(pen, cx - 5f, cy - 2.6f, cx + 5f, cy - 2.6f);
+                g.DrawLine(pen, cx - 5f, cy + 2.6f, cx + 5f, cy + 2.6f);
+                g.FillEllipse(brush, cx - 3.2f, cy - 4.4f, 3.6f, 3.6f);
+                g.FillEllipse(brush, cx + 0.4f, cy + 0.8f, 3.6f, 3.6f);
+                break;
+
+            case ActionGlyph.Refresh:
+                g.DrawArc(pen, cx - 4.6f, cy - 4.6f, 9.2f, 9.2f, 40, 280);
+                g.DrawLines(pen, [
+                    new PointF(cx + 2.2f, cy - 5.2f),
+                    new PointF(cx + 4.8f, cy - 2.6f),
+                    new PointF(cx + 1.6f, cy - 2.0f),
+                ]);
+                break;
+        }
     }
 }
 
@@ -744,8 +1418,9 @@ internal sealed class ModernToggleRow : Control
             ControlStyles.ResizeRedraw |
             ControlStyles.Selectable,
             true);
+        TabStop = true;
         Cursor = Cursors.Hand;
-        Height = string.IsNullOrEmpty(subtitle) ? 38 : 48;
+        Height = string.IsNullOrEmpty(subtitle) ? 40 : 48;
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -759,6 +1434,28 @@ internal sealed class ModernToggleRow : Control
                 _checked = value;
                 Invalidate();
             }
+        }
+    }
+
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        base.OnLostFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.KeyCode is Keys.Space or Keys.Enter)
+        {
+            Toggle();
+            e.Handled = true;
         }
     }
 
@@ -781,10 +1478,15 @@ internal sealed class ModernToggleRow : Control
         base.OnMouseDown(e);
         if (e.Button == MouseButtons.Left)
         {
-            _checked = !_checked;
-            Invalidate();
-            CheckedChanged?.Invoke(_checked);
+            Toggle();
         }
+    }
+
+    private void Toggle()
+    {
+        _checked = !_checked;
+        Invalidate();
+        CheckedChanged?.Invoke(_checked);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -808,25 +1510,36 @@ internal sealed class ModernToggleRow : Control
             g.DrawPath(borderPen, path);
         }
 
-        // Title & Subtitle
-        using Font titleFont = new("Segoe UI", 8.75f, FontStyle.Bold, GraphicsUnit.Point);
+        float scale = Math.Max(1f, DeviceDpi / 96f);
+        float pad = 14f * scale;
+        float switchW = 38f * scale;
+        float switchH = 20f * scale;
+        RectangleF switchRect = new(Width - switchW - pad, (Height - switchH) * 0.5f, switchW, switchH);
+        float textW = Math.Max(32f, switchRect.X - pad - 10f * scale);
+
+        using Font titleFont = new("Segoe UI", 9f, FontStyle.Bold, GraphicsUnit.Point);
         using SolidBrush titleBrush = new(ModernTheme.InkPrimary);
+        using StringFormat textSf = new()
+        {
+            Alignment = StringAlignment.Near,
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap,
+        };
         if (string.IsNullOrEmpty(_subtitle))
         {
-            g.DrawString(_title, titleFont, titleBrush, new PointF(12f, (Height - 16f) * 0.5f));
+            g.DrawString(_title, titleFont, titleBrush, new RectangleF(pad, 0f, textW, Height), textSf);
         }
         else
         {
-            using Font subFont = new("Segoe UI", 7.5f, FontStyle.Regular, GraphicsUnit.Point);
+            using Font subFont = new("Segoe UI", 7.75f, FontStyle.Regular, GraphicsUnit.Point);
             using SolidBrush subBrush = new(ModernTheme.InkSecondary);
-            g.DrawString(_title, titleFont, titleBrush, new PointF(12f, 7f));
-            g.DrawString(_subtitle, subFont, subBrush, new PointF(12f, 25f));
+            RectangleF titleRect = new(pad, Height * 0.12f, textW, Height * 0.42f);
+            RectangleF subRect = new(pad, Height * 0.52f, textW, Height * 0.36f);
+            g.DrawString(_title, titleFont, titleBrush, titleRect, textSf);
+            g.DrawString(_subtitle, subFont, subBrush, subRect, textSf);
         }
 
-        // Pill toggle switch on the right
-        float switchW = 38f;
-        float switchH = 20f;
-        RectangleF switchRect = new(Width - switchW - 12f, (Height - switchH) * 0.5f, switchW, switchH);
         Color trackColor = _checked ? ModernTheme.AccentHoney : ModernTheme.SurfaceRecessed;
         Color trackBorder = _checked ? ModernTheme.AccentHoneyBright : ModernTheme.BorderHover;
 
@@ -838,8 +1551,9 @@ internal sealed class ModernToggleRow : Control
             g.DrawPath(trackPen, switchPath);
         }
 
-        float thumbSize = 14f;
-        float thumbX = _checked ? (switchRect.Right - thumbSize - 3f) : (switchRect.X + 3f);
+        float thumbSize = 14f * scale;
+        float thumbPad = 3f * scale;
+        float thumbX = _checked ? (switchRect.Right - thumbSize - thumbPad) : (switchRect.X + thumbPad);
         float thumbY = switchRect.Y + (switchH - thumbSize) * 0.5f;
         Color thumbColor = _checked ? ModernTheme.InkOnAccent : ModernTheme.InkSecondary;
 
@@ -847,5 +1561,100 @@ internal sealed class ModernToggleRow : Control
         {
             g.FillEllipse(thumbBrush, thumbX, thumbY, thumbSize, thumbSize);
         }
+
+        if (Focused && ShowFocusCues)
+        {
+            ModernTheme.DrawFocusRing(g, cardRect, 10f);
+        }
+    }
+}
+
+internal sealed class ModernMenuRenderer : ToolStripProfessionalRenderer
+{
+    public ModernMenuRenderer() : base(new ModernMenuColorTable())
+    {
+        RoundedEdges = true;
+    }
+
+    protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
+    {
+        using SolidBrush bg = new(ModernTheme.SurfaceWindow);
+        e.Graphics.FillRectangle(bg, e.AffectedBounds);
+    }
+
+    protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+    {
+        Rectangle rect = new(0, 0, e.AffectedBounds.Width - 1, e.AffectedBounds.Height - 1);
+        using Pen pen = new(ModernTheme.BorderOuter, 1f);
+        e.Graphics.DrawRectangle(pen, rect);
+    }
+
+    protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+    {
+        if (!e.Item.Selected)
+        {
+            return;
+        }
+
+        ModernTheme.ConfigureHighQuality(e.Graphics);
+        RectangleF rect = new(4f, 1f, e.Item.Width - 8f, e.Item.Height - 2f);
+        using GraphicsPath path = ModernTheme.CreateRoundedRect(rect, 6f);
+        using SolidBrush hoverBrush = new(ModernTheme.SurfaceCardHover);
+        e.Graphics.FillPath(hoverBrush, path);
+    }
+
+    protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+    {
+        e.TextColor = e.Item.Enabled
+            ? (e.Item.Selected ? ModernTheme.AccentHoneyBright : ModernTheme.InkPrimary)
+            : ModernTheme.InkDisabled;
+        base.OnRenderItemText(e);
+    }
+
+    protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+    {
+        ModernTheme.ConfigureHighQuality(e.Graphics);
+        Rectangle r = e.ImageRectangle;
+        float cx = r.X + r.Width * 0.5f;
+        float cy = r.Y + r.Height * 0.5f;
+        using Pen pen = new(ModernTheme.AccentHoney, 1.9f)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round,
+        };
+        e.Graphics.DrawLines(pen, [
+            new PointF(cx - 4f, cy),
+            new PointF(cx - 1.2f, cy + 3f),
+            new PointF(cx + 4.2f, cy - 3f),
+        ]);
+    }
+
+    protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+    {
+        int y = e.Item.Height / 2;
+        using Pen pen = new(ModernTheme.Divider, 1f);
+        e.Graphics.DrawLine(pen, 10, y, e.Item.Width - 10, y);
+    }
+
+    protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
+    {
+        e.ArrowColor = e.Item?.Selected == true ? ModernTheme.AccentHoneyBright : ModernTheme.InkSecondary;
+        base.OnRenderArrow(e);
+    }
+
+    private sealed class ModernMenuColorTable : ProfessionalColorTable
+    {
+        public override Color MenuBorder => ModernTheme.BorderOuter;
+        public override Color MenuItemBorder => Color.Transparent;
+        public override Color MenuItemSelected => ModernTheme.SurfaceCardHover;
+        public override Color MenuItemSelectedGradientBegin => ModernTheme.SurfaceCardHover;
+        public override Color MenuItemSelectedGradientEnd => ModernTheme.SurfaceCardHover;
+        public override Color ToolStripDropDownBackground => ModernTheme.SurfaceWindow;
+        public override Color ImageMarginGradientBegin => ModernTheme.SurfaceWindow;
+        public override Color ImageMarginGradientMiddle => ModernTheme.SurfaceWindow;
+        public override Color ImageMarginGradientEnd => ModernTheme.SurfaceWindow;
+        public override Color SeparatorDark => ModernTheme.Divider;
+        public override Color SeparatorLight => ModernTheme.Divider;
     }
 }

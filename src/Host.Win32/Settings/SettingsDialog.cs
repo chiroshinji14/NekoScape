@@ -5,21 +5,36 @@ namespace NekoScape.Host.Settings;
 
 public sealed class SettingsDialog : Form
 {
-    private static readonly Font FontTitle = new("Segoe UI", 12f, FontStyle.Bold, GraphicsUnit.Point);
-    private static readonly Font FontSubtitle = new("Segoe UI", 8.5f, FontStyle.Regular, GraphicsUnit.Point);
-    private static readonly Font FontSection = new("Segoe UI", 7.5f, FontStyle.Bold, GraphicsUnit.Point);
+    private static readonly Font FontTitle = new("Segoe UI", 12.5f, FontStyle.Bold, GraphicsUnit.Point);
+    private static readonly Font FontSubtitle = new("Segoe UI", 8.75f, FontStyle.Regular, GraphicsUnit.Point);
+    private static readonly Font FontSection = new("Segoe UI", 7.25f, FontStyle.Bold, GraphicsUnit.Point);
 
+    private const int PadX = 24;
+    private const int ContentWidth = 416;
+
+    private readonly ModernSegmentedBar _tabBar;
+    private readonly Panel _appearancePage;
+    private readonly Panel _simulationPage;
+    private readonly Panel _systemPage;
+    private readonly ModernActionChip _refreshIconsChip;
+
+    // Appearance & Breeds
     private readonly Dictionary<string, ModernSceneCard> _sceneCards = new(StringComparer.OrdinalIgnoreCase);
     private readonly ModernSegmentedBar _lightingBar;
-    private readonly ModernSegmentedBar _fpsBar;
+    private readonly ModernOptionPicker _breedPicker;
+
+    // Simulation & Performance
     private readonly ModernStepperCard _catStepper;
     private readonly ModernStepperCard _idleNapStepper;
+    private readonly ModernSegmentedBar _fpsBar;
+    private readonly ModernToggleRow _showScenePropsToggle;
+    private readonly ModernToggleRow _shellReactionsToggle;
 
+    // System
     private readonly ModernToggleRow _showToyDockToggle;
     private readonly ModernToggleRow _laserHotkeyToggle;
-    private readonly ModernToggleRow _shellReactionsToggle;
-    private readonly ModernToggleRow _debugModeToggle;
     private readonly ModernToggleRow _launchAtStartupToggle;
+    private readonly ModernToggleRow _debugModeToggle;
 
     private string _selectedSceneTheme = "study";
     private bool _showHudValue;
@@ -38,53 +53,70 @@ public sealed class SettingsDialog : Form
 
         SuspendLayout();
 
-        Text = "NekoScape Preferences";
+        Text = "NekoScape Settings";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
+        AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(420, 628);
+        KeyPreview = true;
+        ClientSize = new Size(464, 492);
         BackColor = ModernTheme.SurfaceWindow;
         ForeColor = ModernTheme.InkPrimary;
         Font = new Font("Segoe UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
         DoubleBuffered = true;
 
-        int padX = 20;
-        int contentW = ClientSize.Width - padX * 2; // 380
-
         // Header
         var titleLabel = new Label
         {
-            Text = "NekoScape Control Center",
-            Location = new Point(padX, 14),
-            Size = new Size(250, 24),
+            Text = "NekoScape Settings",
+            Location = new Point(PadX, 16),
+            Size = new Size(ContentWidth, 26),
             ForeColor = ModernTheme.InkPrimary,
             Font = FontTitle,
         };
 
         var subLabel = new Label
         {
-            Text = "Customize your desktop cats, environment props & simulation.",
-            Location = new Point(padX, 38),
-            Size = new Size(contentW, 18),
+            Text = "Personalize your scenes, breeds, and desktop behavior.",
+            Location = new Point(PadX, 42),
+            Size = new Size(ContentWidth, 18),
             ForeColor = ModernTheme.InkSecondary,
             Font = FontSubtitle,
         };
 
-        Controls.Add(titleLabel);
-        Controls.Add(subLabel);
+        // 3-Group Section Tabs
+        _tabBar = new ModernSegmentedBar(
+            [
+                ("appearance", "Appearance"),
+                ("simulation", "Simulation"),
+                ("system", "System"),
+            ],
+            isHeaderTab: true)
+        {
+            Location = new Point(PadX, 70),
+            Size = new Size(ContentWidth, 36),
+            AccessibleName = "Settings sections",
+        };
+        _tabBar.SelectionChanged += SwitchTab;
 
-        // Section 1: Scene Bento Grid (2x2)
-        Controls.Add(CreateSectionHeader("ENVIRONMENT SCENE", padX, 64, contentW));
+        _appearancePage = CreatePagePanel(visible: true);
+        _simulationPage = CreatePagePanel(visible: false);
+        _systemPage = CreatePagePanel(visible: false);
 
-        int cardW = (contentW - 10) / 2; // 185
+        // ============================================================
+        // TAB 1: APPEARANCE & BREEDS
+        // ============================================================
+        _appearancePage.Controls.Add(CreateSectionHeader("SCENE", 0, 0, ContentWidth));
+
+        int cardW = (ContentWidth - 12) / 2; // 202
         (string Key, string Title, string Sub, Color Floor, Color Rug, Color Accent, Point Pos)[] sceneSpecs =
         [
-            ("study", "Golden Study", "Oak, Monstera & Books", Color.FromArgb(148, 98, 56), Color.FromArgb(228, 212, 190), Color.FromArgb(60, 145, 92), new Point(padX, 82)),
-            ("tatami", "Kyoto Tatami", "Bonsai, Tea & Lantern", Color.FromArgb(164, 152, 92), Color.FromArgb(47, 74, 58), Color.FromArgb(240, 168, 184), new Point(padX + cardW + 10, 82)),
-            ("garden", "Courtyard Garden", "Koi Pond & Flowers", Color.FromArgb(124, 118, 108), Color.FromArgb(72, 130, 74), Color.FromArgb(46, 134, 152), new Point(padX, 142)),
-            ("cafe", "Cat Cafe Patio", "Bistro & Cat Tower", Color.FromArgb(172, 138, 108), Color.FromArgb(196, 118, 76), Color.FromArgb(236, 224, 210), new Point(padX + cardW + 10, 142)),
+            ("study", "Golden Study", "Oak, Monstera & Books", Color.FromArgb(148, 98, 56), Color.FromArgb(228, 212, 190), Color.FromArgb(60, 145, 92), new Point(0, 22)),
+            ("tatami", "Kyoto Tatami", "Bonsai, Tea & Lantern", Color.FromArgb(164, 152, 92), Color.FromArgb(47, 74, 58), Color.FromArgb(240, 168, 184), new Point(cardW + 12, 22)),
+            ("garden", "Sunlit Courtyard", "Koi Pond & Clover", Color.FromArgb(124, 118, 108), Color.FromArgb(72, 130, 74), Color.FromArgb(46, 134, 152), new Point(0, 88)),
+            ("cafe", "Cat Cafe", "Bistro & Cat Tower", Color.FromArgb(172, 138, 108), Color.FromArgb(196, 118, 76), Color.FromArgb(236, 224, 210), new Point(cardW + 12, 88)),
         ];
 
         foreach (var spec in sceneSpecs)
@@ -92,16 +124,16 @@ public sealed class SettingsDialog : Form
             var card = new ModernSceneCard(spec.Key, spec.Title, spec.Sub, spec.Floor, spec.Rug, spec.Accent)
             {
                 Location = spec.Pos,
-                Size = new Size(cardW, 54),
+                Size = new Size(cardW, 56),
                 Selected = string.Equals(spec.Key, _selectedSceneTheme, StringComparison.OrdinalIgnoreCase),
+                AccessibleName = $"Select {spec.Title} scene",
             };
-            card.Clicked += key => SelectSceneCard(key);
+            card.Clicked += SelectSceneCard;
             _sceneCards[spec.Key] = card;
-            Controls.Add(card);
+            _appearancePage.Controls.Add(card);
         }
 
-        // Section 2: Lighting & Frame Rate
-        Controls.Add(CreateSectionHeader("ATMOSPHERE LIGHTING", padX, 204, 215));
+        _appearancePage.Controls.Add(CreateSectionHeader("LIGHTING", 0, 158, ContentWidth));
         _lightingBar = new ModernSegmentedBar(
             [
                 ("auto", "Auto"),
@@ -110,109 +142,145 @@ public sealed class SettingsDialog : Form
                 ("night", "Night"),
             ])
         {
-            Location = new Point(padX, 222),
-            Size = new Size(218, 34),
+            Location = new Point(0, 180),
+            Size = new Size(ContentWidth, 36),
             SelectedKey = normalized.LightingMode,
+            AccessibleName = "Lighting mode selector",
         };
-        Controls.Add(_lightingBar);
+        _appearancePage.Controls.Add(_lightingBar);
 
-        Controls.Add(CreateSectionHeader("FRAME RATE CAP", padX + 228, 204, 152));
+        _appearancePage.Controls.Add(CreateSectionHeader("BREED MIX", 0, 230, ContentWidth));
+        _breedPicker = new ModernOptionPicker(
+            "Cat Breeds",
+            TrayFlyoutForm.BreedPickerOptions,
+            normalized.BreedMode)
+        {
+            Location = new Point(0, 252),
+            Size = new Size(ContentWidth, 44),
+            AccessibleName = "Preferred cat breed mix",
+        };
+        _appearancePage.Controls.Add(_breedPicker);
+
+        // ============================================================
+        // TAB 2: SIMULATION & PERFORMANCE
+        // ============================================================
+        _simulationPage.Controls.Add(CreateSectionHeader("CATS & PACE", 0, 0, ContentWidth));
+
+        _catStepper = new ModernStepperCard("Cats", 1, 12, normalized.CatCount)
+        {
+            Location = new Point(0, 22),
+            Size = new Size(cardW, 48),
+            AccessibleName = "Number of cats",
+        };
+        _idleNapStepper = new ModernStepperCard("Idle Nap", 1, 60, Math.Clamp(normalized.IdleNapMinutes, 1, 60), "m")
+        {
+            Location = new Point(cardW + 12, 22),
+            Size = new Size(cardW, 48),
+            AccessibleName = "Idle nap timeout in minutes",
+        };
+        _simulationPage.Controls.Add(_catStepper);
+        _simulationPage.Controls.Add(_idleNapStepper);
+
+        _simulationPage.Controls.Add(CreateSectionHeader("FRAME RATE", 0, 86, ContentWidth));
         _fpsBar = new ModernSegmentedBar(
             [
-                ("30", "30"),
-                ("60", "60"),
-                ("0", "Max"),
+                ("30", "30 FPS"),
+                ("60", "60 FPS"),
+                ("0", "Uncapped"),
             ])
         {
-            Location = new Point(padX + 228, 222),
-            Size = new Size(152, 34),
+            Location = new Point(0, 108),
+            Size = new Size(ContentWidth, 36),
             SelectedKey = FpsToKey(normalized.FpsCap),
+            AccessibleName = "Frame rate limit",
         };
-        Controls.Add(_fpsBar);
+        _simulationPage.Controls.Add(_fpsBar);
 
-        // Section 3: Steppers (Cat Count & Idle Nap)
-        Controls.Add(CreateSectionHeader("SIMULATION PARAMETERS", padX, 264, contentW));
-
-        _catStepper = new ModernStepperCard("Cat Pack Size", 1, 12, normalized.CatCount)
+        _simulationPage.Controls.Add(CreateSectionHeader("WORLD & REACTIONS", 0, 160, ContentWidth));
+        _showScenePropsToggle = new ModernToggleRow(
+            "Interactive Scene Props",
+            "Clickable lamps, ponds, cushions, and cozy details",
+            normalized.ShowSceneProps)
         {
-            Location = new Point(padX, 282),
-            Size = new Size(cardW, 46),
+            Location = new Point(0, 182),
+            Size = new Size(ContentWidth, 48),
+            AccessibleName = "Toggle interactive scene props",
         };
-        Controls.Add(_catStepper);
-
-        _idleNapStepper = new ModernStepperCard("Idle Nap Timeout", 1, 60, Math.Clamp(normalized.IdleNapMinutes, 1, 60), "m")
-        {
-            Location = new Point(padX + cardW + 10, 282),
-            Size = new Size(cardW, 46),
-        };
-        Controls.Add(_idleNapStepper);
-
-        // Section 4: Pill Toggles
-        Controls.Add(CreateSectionHeader("INTERACTION & OVERLAYS", padX, 336, contentW));
-
-        _showToyDockToggle = new ModernToggleRow(
-            "Show On-Wallpaper Web FAB",
-            "Floating bottom-right control button on the desktop canvas",
-            normalized.ShowToyDock)
-        {
-            Location = new Point(padX, 354),
-            Size = new Size(contentW, 42),
-        };
-
-        _laserHotkeyToggle = new ModernToggleRow(
-            "Enable Laser Pointer Hotkeys",
-            "Hold Alt to aim laser or press Ctrl+Alt+L for sticky laser",
-            normalized.EnableLaserHotkey)
-        {
-            Location = new Point(padX, 400),
-            Size = new Size(contentW, 42),
-        };
-
         _shellReactionsToggle = new ModernToggleRow(
-            "Enable Desktop Shell Reactions",
-            "Cats pounce toward newly created files and Recycle Bin events",
+            "Desktop Reactions",
+            "Cats investigate new files and react to the Recycle Bin",
             normalized.EnableShellReactions)
         {
-            Location = new Point(padX, 446),
-            Size = new Size(contentW, 42),
+            Location = new Point(0, 240),
+            Size = new Size(ContentWidth, 48),
+            AccessibleName = "Toggle desktop reactions",
         };
+        _simulationPage.Controls.Add(_showScenePropsToggle);
+        _simulationPage.Controls.Add(_shellReactionsToggle);
 
-        _debugModeToggle = new ModernToggleRow(
-            "Show Debug Collision Wireframes",
-            "Overlay icon AABBs, cat velocity vectors, and state labels",
-            normalized.DebugMode)
+        // ============================================================
+        // TAB 3: SYSTEM
+        // ============================================================
+        _systemPage.Controls.Add(CreateSectionHeader("CONTROLS & SHORTCUTS", 0, 0, ContentWidth));
+        _showToyDockToggle = new ModernToggleRow(
+            "Controls Overlay",
+            "Show the floating quick-controls button on the canvas",
+            normalized.ShowToyDock)
         {
-            Location = new Point(padX, 492),
-            Size = new Size(contentW, 42),
+            Location = new Point(0, 22),
+            Size = new Size(ContentWidth, 48),
+            AccessibleName = "Toggle controls overlay button",
         };
+        _laserHotkeyToggle = new ModernToggleRow(
+            "Laser Pointer Shortcut",
+            "Hold Alt to aim laser or press Ctrl+Alt+L to lock on",
+            normalized.EnableLaserHotkey)
+        {
+            Location = new Point(0, 80),
+            Size = new Size(ContentWidth, 48),
+            AccessibleName = "Toggle laser pointer shortcuts",
+        };
+        _systemPage.Controls.Add(_showToyDockToggle);
+        _systemPage.Controls.Add(_laserHotkeyToggle);
 
+        _systemPage.Controls.Add(CreateSectionHeader("WINDOWS & DIAGNOSTICS", 0, 144, ContentWidth));
         _launchAtStartupToggle = new ModernToggleRow(
-            "Launch NekoScape at Windows Startup",
-            "Automatically start wallpaper in the system tray on sign-in",
+            "Start with Windows",
+            "Launch NekoScape automatically when you sign in",
             normalized.LaunchAtStartup)
         {
-            Location = new Point(padX, 538),
-            Size = new Size(contentW, 42),
+            Location = new Point(0, 166),
+            Size = new Size(ContentWidth, 48),
+            AccessibleName = "Launch NekoScape at Windows startup",
         };
-
-        Controls.Add(_showToyDockToggle);
-        Controls.Add(_laserHotkeyToggle);
-        Controls.Add(_shellReactionsToggle);
-        Controls.Add(_debugModeToggle);
-        Controls.Add(_launchAtStartupToggle);
-
-        // Bottom Action Bar
-        var rescanChip = new ModernActionChip("Rescan Icons")
+        _debugModeToggle = new ModernToggleRow(
+            "Debug Overlay",
+            "Show collision bounds, velocity paths, and cat states",
+            normalized.DebugMode)
         {
-            Location = new Point(padX, 588),
-            Size = new Size(118, 30),
+            Location = new Point(0, 224),
+            Size = new Size(ContentWidth, 48),
+            AccessibleName = "Toggle debug overlay",
         };
-        rescanChip.Click += (_, _) => RescanIconsRequested?.Invoke();
+        _systemPage.Controls.Add(_launchAtStartupToggle);
+        _systemPage.Controls.Add(_debugModeToggle);
+
+        // ============================================================
+        // FOOTER ACTION BAR
+        // ============================================================
+        _refreshIconsChip = new ModernActionChip("Refresh Icons", glyph: ActionGlyph.Refresh)
+        {
+            Location = new Point(PadX, 438),
+            Size = new Size(124, 34),
+            AccessibleName = "Refresh desktop icons",
+        };
+        _refreshIconsChip.Click += (_, _) => RescanIconsRequested?.Invoke();
 
         var cancelChip = new ModernActionChip("Cancel")
         {
-            Location = new Point(padX + contentW - 246, 588),
-            Size = new Size(76, 30),
+            Location = new Point(PadX + ContentWidth - 264, 438),
+            Size = new Size(82, 34),
+            AccessibleName = "Cancel changes",
         };
         cancelChip.Click += (_, _) =>
         {
@@ -222,8 +290,9 @@ public sealed class SettingsDialog : Form
 
         var applyChip = new ModernActionChip("Apply")
         {
-            Location = new Point(padX + contentW - 164, 588),
-            Size = new Size(76, 30),
+            Location = new Point(PadX + ContentWidth - 174, 438),
+            Size = new Size(82, 34),
+            AccessibleName = "Apply changes",
         };
         applyChip.Click += (_, _) =>
         {
@@ -233,30 +302,77 @@ public sealed class SettingsDialog : Form
 
         var saveChip = new ModernActionChip("Save")
         {
-            Location = new Point(padX + contentW - 82, 588),
-            Size = new Size(82, 30),
+            Location = new Point(PadX + ContentWidth - 84, 438),
+            Size = new Size(84, 34),
             Active = true,
+            AccessibleName = "Save and close settings",
         };
-        saveChip.Click += (_, _) =>
-        {
-            ResultSettings = ReadFormSettings();
-            SettingsApplied?.Invoke(ResultSettings);
-            DialogResult = DialogResult.OK;
-            Close();
-        };
+        saveChip.Click += (_, _) => SaveAndClose();
 
-        Controls.Add(rescanChip);
-        Controls.Add(cancelChip);
-        Controls.Add(applyChip);
-        Controls.Add(saveChip);
+        Controls.AddRange([
+            titleLabel,
+            subLabel,
+            _tabBar,
+            _appearancePage,
+            _simulationPage,
+            _systemPage,
+            _refreshIconsChip,
+            cancelChip,
+            applyChip,
+            saveChip,
+        ]);
 
         ResumeLayout(performLayout: false);
     }
 
+    private void SaveAndClose()
+    {
+        ResultSettings = ReadFormSettings();
+        SettingsApplied?.Invoke(ResultSettings);
+        DialogResult = DialogResult.OK;
+        Close();
+    }
+
+    private void SwitchTab(string key)
+    {
+        _appearancePage.Visible = string.Equals(key, "appearance", StringComparison.OrdinalIgnoreCase);
+        _simulationPage.Visible = string.Equals(key, "simulation", StringComparison.OrdinalIgnoreCase);
+        _systemPage.Visible = string.Equals(key, "system", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Panel CreatePagePanel(bool visible) => new()
+    {
+        Location = new Point(PadX, 118),
+        Size = new Size(ContentWidth, 300),
+        BackColor = ModernTheme.SurfaceWindow,
+        Visible = visible,
+    };
+
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        Win32Api.TryEnableDarkTitleBar(Handle);
         Win32Api.TryEnableRoundedCorners(Handle);
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == Keys.Escape)
+        {
+            DialogResult = DialogResult.Cancel;
+            Close();
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        int padX = _tabBar.Left;
+        int dividerY = (_appearancePage.Bottom + _refreshIconsChip.Top) / 2;
+        using Pen dividerPen = new(ModernTheme.Divider, 1f);
+        e.Graphics.DrawLine(dividerPen, padX, dividerY, ClientSize.Width - padX, dividerY);
     }
 
     private void SelectSceneCard(string sceneKey)
@@ -276,9 +392,11 @@ public sealed class SettingsDialog : Form
 
         SelectSceneCard(normalized.SceneTheme);
         _lightingBar.SelectedKey = normalized.LightingMode;
+        _breedPicker.SelectedKey = normalized.BreedMode;
         _fpsBar.SelectedKey = FpsToKey(normalized.FpsCap);
         _catStepper.Value = normalized.CatCount;
         _idleNapStepper.Value = Math.Clamp(normalized.IdleNapMinutes, 1, 60);
+        _showScenePropsToggle.Checked = normalized.ShowSceneProps;
         _showToyDockToggle.Checked = normalized.ShowToyDock;
         _laserHotkeyToggle.Checked = normalized.EnableLaserHotkey;
         _shellReactionsToggle.Checked = normalized.EnableShellReactions;
@@ -308,6 +426,8 @@ public sealed class SettingsDialog : Form
             IdleNapMinutes = _idleNapStepper.Value,
             LightingMode = NekoSettings.NormalizeLightingMode(_lightingBar.SelectedKey),
             SceneTheme = NekoSettings.NormalizeSceneTheme(_selectedSceneTheme),
+            BreedMode = NekoSettings.NormalizeBreedMode(_breedPicker.SelectedKey),
+            ShowSceneProps = _showScenePropsToggle.Checked,
         }.Normalized();
     }
 
@@ -321,8 +441,8 @@ public sealed class SettingsDialog : Form
     private static Label CreateSectionHeader(string text, int x, int y, int width) => new()
     {
         Text = text,
-        Location = new Point(x, y),
-        Size = new Size(width, 16),
+        Location = new Point(x + 2, y),
+        Size = new Size(width - 4, 16),
         TextAlign = ContentAlignment.MiddleLeft,
         ForeColor = ModernTheme.InkMuted,
         Font = FontSection,

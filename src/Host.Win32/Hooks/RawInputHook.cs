@@ -107,6 +107,160 @@ public sealed class LaserHotkeyState
     }
 }
 
+/// <summary>
+/// Detects clean single/double left-clicks on empty desktop wallpaper space so
+/// users can click cats and interactive scene props in embedded wallpaper mode
+/// without ever interfering with desktop icons, icon drags, or marquee selection.
+/// </summary>
+public sealed class DesktopClickDetector
+{
+    public const double DefaultMaxMoveDistance = 8.0;
+    public const long DefaultMaxClickDurationMs = 450;
+    public const long DefaultDoubleClickWindowMs = 420;
+    public const double DefaultDoubleClickRadius = 12.0;
+    public const double DefaultIconHitPadding = 4.0;
+
+    private readonly double _maxMoveDistance;
+    private readonly long _maxClickDurationMs;
+    private readonly long _doubleClickWindowMs;
+    private readonly double _doubleClickRadius;
+    private readonly double _iconHitPadding;
+
+    private bool _pendingClick;
+    private double _downX;
+    private double _downY;
+    private long _downMs;
+
+    private bool _hasLastClick;
+    private double _lastClickX;
+    private double _lastClickY;
+    private long _lastClickMs;
+
+    public DesktopClickDetector(
+        double maxMoveDistance = DefaultMaxMoveDistance,
+        long maxClickDurationMs = DefaultMaxClickDurationMs,
+        long doubleClickWindowMs = DefaultDoubleClickWindowMs,
+        double doubleClickRadius = DefaultDoubleClickRadius,
+        double iconHitPadding = DefaultIconHitPadding)
+    {
+        _maxMoveDistance = maxMoveDistance;
+        _maxClickDurationMs = maxClickDurationMs;
+        _doubleClickWindowMs = doubleClickWindowMs;
+        _doubleClickRadius = doubleClickRadius;
+        _iconHitPadding = iconHitPadding;
+    }
+
+    public void Reset()
+    {
+        _pendingClick = false;
+    }
+
+    public void OnLeftButtonDown(
+        double x,
+        double y,
+        long nowMs,
+        bool isOnDesktopSurface,
+        IReadOnlyList<DesktopIconRect> icons,
+        double viewportWidth,
+        double viewportHeight)
+    {
+        if (!isOnDesktopSurface
+            || !IsWithinViewport(x, y, viewportWidth, viewportHeight)
+            || IsPointOnAnyIcon(x, y, icons, _iconHitPadding))
+        {
+            _pendingClick = false;
+            return;
+        }
+
+        _pendingClick = true;
+        _downX = x;
+        _downY = y;
+        _downMs = nowMs;
+    }
+
+    public PointerClickMessage? OnLeftButtonUp(
+        double x,
+        double y,
+        long nowMs,
+        bool isOnDesktopSurface,
+        IReadOnlyList<DesktopIconRect> icons,
+        double viewportWidth,
+        double viewportHeight)
+    {
+        if (!_pendingClick)
+        {
+            return null;
+        }
+
+        _pendingClick = false;
+
+        if (!isOnDesktopSurface
+            || !IsWithinViewport(x, y, viewportWidth, viewportHeight)
+            || IsPointOnAnyIcon(x, y, icons, _iconHitPadding))
+        {
+            return null;
+        }
+
+        long elapsedMs = nowMs - _downMs;
+        if (elapsedMs < 0 || elapsedMs > _maxClickDurationMs)
+        {
+            return null;
+        }
+
+        double moved = double.Hypot(x - _downX, y - _downY);
+        if (moved > _maxMoveDistance)
+        {
+            return null;
+        }
+
+        bool isDoubleClick = _hasLastClick
+            && (nowMs - _lastClickMs) >= 0
+            && (nowMs - _lastClickMs) <= _doubleClickWindowMs
+            && double.Hypot(x - _lastClickX, y - _lastClickY) <= _doubleClickRadius;
+
+        if (isDoubleClick)
+        {
+            _hasLastClick = false;
+        }
+        else
+        {
+            _hasLastClick = true;
+            _lastClickX = x;
+            _lastClickY = y;
+            _lastClickMs = nowMs;
+        }
+
+        return new PointerClickMessage(
+            X: Math.Round(x, 2),
+            Y: Math.Round(y, 2),
+            Button: PointerButtons.Left,
+            DoubleClick: isDoubleClick ? true : null);
+    }
+
+    public static bool IsPointOnAnyIcon(
+        double x,
+        double y,
+        IReadOnlyList<DesktopIconRect> icons,
+        double padding = DefaultIconHitPadding)
+    {
+        for (int i = 0; i < icons.Count; i++)
+        {
+            DesktopIconRect icon = icons[i];
+            if (x >= icon.X - padding
+                && x <= icon.X + icon.Width + padding
+                && y >= icon.Y - padding
+                && y <= icon.Y + icon.Height + padding)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool IsWithinViewport(double x, double y, double width, double height)
+        => width > 0 && height > 0 && x >= 0 && y >= 0 && x <= width && y <= height;
+}
+
 public sealed class RawInputHook : NativeWindow, IDisposable
 {
     private readonly Func<(int OriginX, int OriginY, double DpiScale)> _getOriginAndDpi;

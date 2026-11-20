@@ -1,7 +1,7 @@
 {
   "catCount": 6,
   "fpsCap": 60,
-  "showHud": true,
+  "showHud": false,
   "showToyDock": true,
   "debugMode": false,
   "enableLaserHotkey": true,
@@ -9,5 +9,7 @@
   "launchAtStartup": false,
   "idleNapMinutes": 5,
   "lightingMode": "golden",
-  "sceneTheme": "study"
+  "sceneTheme": "study",
+  "breedMode": "mix",
+  "showSceneProps": true
 }

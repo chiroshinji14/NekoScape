@@ -39,6 +39,13 @@ public sealed record MouseRawMessage(
     bool LaserMode,
     bool SplitPrism) : HostToRendererMessage("MOUSE_RAW");
 
+public sealed record PointerClickMessage(
+    double X,
+    double Y,
+    string Button = PointerButtons.Left,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? DoubleClick = null)
+    : HostToRendererMessage("POINTER_CLICK");
+
 public sealed record NewFileEventMessage(
     string FileName,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DesktopIconRect? Icon = null)
@@ -78,6 +85,15 @@ public sealed record StatsUpdateMessage(
 
 public sealed record RequestIconRescanMessage() : RendererToHostMessage("REQUEST_ICON_RESCAN");
 
+public sealed record SettingsChangedMessage(
+    NekoSettingsPatch Settings) : RendererToHostMessage("SETTINGS_CHANGED");
+
+public static class PointerButtons
+{
+    public const string Left = "left";
+    public const string Right = "right";
+}
+
 public static class PowerReasons
 {
     public const string Occluded = "occluded";
@@ -91,6 +107,8 @@ public static class SpawnActions
     public const string ToggleLaser = "toggleLaser";
     public const string RescanIcons = "rescanIcons";
     public const string ToggleBox = "toggleBox";
+    public const string DropTreat = "dropTreat";
+    public const string ToggleProps = "toggleProps";
 }
 
 public sealed class IpcChannel
@@ -107,6 +125,7 @@ public sealed class IpcChannel
     public event Action<ReadyMessage>? ReadyReceived;
     public event Action<StatsUpdateMessage>? StatsUpdated;
     public event Action<RequestIconRescanMessage>? IconRescanRequested;
+    public event Action<SettingsChangedMessage>? SettingsChangedReceived;
     public event Action<RendererToHostMessage>? MessageReceived;
 
     public void Attach(CoreWebView2 webView, Control uiControl)
@@ -190,6 +209,7 @@ public sealed class IpcChannel
         {
             "ICON_UPDATE" => doc.RootElement.Deserialize<IconUpdateMessage>(JsonOptions),
             "MOUSE_RAW" => doc.RootElement.Deserialize<MouseRawMessage>(JsonOptions),
+            "POINTER_CLICK" => doc.RootElement.Deserialize<PointerClickMessage>(JsonOptions),
             "NEW_FILE_EVENT" => doc.RootElement.Deserialize<NewFileEventMessage>(JsonOptions),
             "RECYCLE_BIN_EVENT" => doc.RootElement.Deserialize<RecycleBinEventMessage>(JsonOptions),
             "TYPING_ACTIVITY" => doc.RootElement.Deserialize<TypingActivityMessage>(JsonOptions),
@@ -219,6 +239,7 @@ public sealed class IpcChannel
             "READY" => doc.RootElement.Deserialize<ReadyMessage>(JsonOptions),
             "STATS_UPDATE" => doc.RootElement.Deserialize<StatsUpdateMessage>(JsonOptions),
             "REQUEST_ICON_RESCAN" => doc.RootElement.Deserialize<RequestIconRescanMessage>(JsonOptions),
+            "SETTINGS_CHANGED" => doc.RootElement.Deserialize<SettingsChangedMessage>(JsonOptions),
             _ => null
         };
     }
@@ -245,6 +266,9 @@ public sealed class IpcChannel
                     break;
                 case RequestIconRescanMessage rescan:
                     IconRescanRequested?.Invoke(rescan);
+                    break;
+                case SettingsChangedMessage settingsChanged:
+                    SettingsChangedReceived?.Invoke(settingsChanged);
                     break;
             }
         }

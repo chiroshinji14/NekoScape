@@ -4,7 +4,13 @@ import { Application, Container } from 'pixi.js';
 import { PhysicsWorld } from './core/PhysicsWorld';
 import { SurfaceManager } from './core/SurfaceManager';
 import { CardboardBox } from './entities/CardboardBox';
-import { CatEntity, type CatContext } from './entities/CatEntity';
+import { pickDiverseBreedOrder } from './entities/CatBreeds';
+import {
+  CatEntity,
+  hitTestCat,
+  onCatClicked,
+  type CatContext,
+} from './entities/CatEntity';
 import { ParticleSystem } from './entities/ParticleSystem';
 import { PrismLaser } from './entities/PrismLaser';
 import { YarnBall } from './entities/YarnBall';
@@ -15,13 +21,17 @@ import { RugOverlay } from './environment/RugOverlay';
 import { ScenePropsOverlay } from './environment/ScenePropsOverlay';
 import type { HostToRendererMessage, RendererToHostMessage } from './types/ipc';
 import {
-  CAT_BREEDS,
   DEFAULT_SETTINGS,
   RECYCLE_STARTLE_RADIUS,
   SCENE_THEMES,
+  normalizeBreedMode,
   type AabbRect,
   type CatBreed,
+  type CatBreedMode,
+  type CatMood,
+  type CatPersonality,
   type CatStateName,
+  type InteractivePropState,
   type LightingMode,
   type NekoSettings,
   type SceneTheme,
@@ -51,12 +61,20 @@ export interface NekoScapeDebugApi {
     lightingMode: LightingMode;
     effectiveLighting: EffectiveLightingMode;
     sceneTheme: SceneTheme;
+    breedMode: CatBreedMode;
+    showSceneProps: boolean;
+    activeTreatsCount: number;
+    interactivePropsCount: number;
     nativeHostConnected: boolean;
     fpsCap: number;
   };
   getCats: () => Array<{
     id: number;
+    name: string;
     breed: CatBreed;
+    mood: CatMood;
+    personality: CatPersonality;
+    activePropId: string | null;
     state: CatStateName;
     x: number;
     y: number;
@@ -66,8 +84,11 @@ export interface NekoScapeDebugApi {
     perchedIconId: number | null;
   }>;
   getObstacles: () => AabbRect[];
+  getInteractiveProps: () => readonly InteractivePropState[];
   isSplitPrism: () => boolean;
   getLighting: () => { mode: LightingMode; effective: EffectiveLightingMode };
+  dropTreat: (x?: number, y?: number) => void;
+  clickAt: (x: number, y: number, doubleClick?: boolean) => boolean;
 }
 
 declare global {
@@ -89,7 +110,13 @@ class PettingDetector {
   private readonly samples: PetCursorSample[] = [];
   private readonly lastPetTimeByCat = new Map<number, number>();
 
-  recordCursor(x: number, y: number, nowSec: number, cats: readonly CatEntity[], particles: ParticleSystem): void {
+  recordCursor(
+    x: number,
+    y: number,
+    nowSec: number,
+    cats: readonly CatEntity[],
+    particles: ParticleSystem,
+  ): void {
     const prev = this.samples[this.samples.length - 1];
     if (prev && Math.hypot(x - prev.x, y - prev.y) < 3) {
       return;
@@ -282,6 +309,7 @@ async function bootstrap(): Promise<void> {
     initialRug,
     settings.sceneTheme,
   );
+  scenePropsOverlay.setPropsEnabled(settings.showSceneProps);
   scenePropsUnderLayer.addChild(scenePropsOverlay.underContainer);
   scenePropsOverLayer.addChild(scenePropsOverlay.overContainer);
 
@@ -295,10 +323,12 @@ async function bootstrap(): Promise<void> {
 
   let lastEffectiveLighting: EffectiveLightingMode = lightingOverlay.getEffectiveLighting();
   iconMatsOverlay.setLighting(lastEffectiveLighting);
+  scenePropsOverlay.setLightingMode(lastEffectiveLighting);
   scenePropsOverlay.setNightMode(lastEffectiveLighting === 'night');
+  lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
 
   // Particles & Props
-  const particleSystem = new ParticleSystem(120);
+  const particleSystem = new ParticleSystem(180);
   particlesLayer.addChild(particleSystem);
 
   const yarnBall = new YarnBall(
@@ -352,11 +382,28 @@ async function bootstrap(): Promise<void> {
   let recycleBinBatTimer = 14;
   let nextPlayIconMode: 'perch' | 'scratch' = 'perch';
   let playIconCursor = 0;
+  let lastTrackedTreatCount = 0;
 
   // UI Overlays (initialized early so perch tracking can reference mockIcons safely)
   const hud = new HudOverlay(hudRoot);
   let dock!: ToyDock;
   let mockIcons!: MockDesktopIcons;
+
+  // Win32 WebView2 IPC Bridge helper
+  const webview = window.chrome?.webview;
+
+  function postToHost(msg: RendererToHostMessage): void {
+    webview?.postMessage(msg);
+  }
+
+  function notifyHostSettingsChanged(patch: Partial<NekoSettings>): void {
+    if (nativeHostConnected) {
+      postToHost({
+        type: 'SETTINGS_CHANGED',
+        settings: patch,
+      });
+    }
+  }
 
   // Icon perch occupancy tracking
   const perchedIconByCat = new Map<number, number>();
@@ -383,32 +430,65 @@ async function bootstrap(): Promise<void> {
     syncOccupiedIconIds();
   }
 
-  // Cat Pack management
+  // Cat Pack management with diverse real-life breed showcase & decorrelated seeds
   const cats: CatEntity[] = [];
   let nextCatId = 1;
+  let breedRotationOffset = 0;
 
   function computeCatSpawnPoint(index: number): Vec2 {
     const rug = surfaceManager.getRugBounds();
     const cx = rug.x + rug.width * 0.5;
     const cy = rug.y + rug.height * 0.5;
-    const angle = index * 1.15 + 0.4;
-    const rx = Math.min(rug.width * 0.34, 48 + (index % 4) * 32);
-    const ry = Math.min(rug.height * 0.32, 36 + (index % 3) * 28);
+    // Golden-angle spiral distribution so spawned cats never cluster in identical columns
+    const goldenAngle = index * 2.399963229728653 + 0.35;
+    const radialFrac = 0.24 + ((index * 0.29) % 0.68);
+    const rx = Math.min(rug.width * 0.42, Math.max(46, rug.width * 0.42 * radialFrac));
+    const ry = Math.min(rug.height * 0.4, Math.max(38, rug.height * 0.4 * radialFrac));
     return {
-      x: clamp(cx + Math.cos(angle) * rx, 32, viewWidth - 32),
-      y: clamp(cy + Math.sin(angle) * ry, 32, viewHeight - 32),
+      x: clamp(cx + Math.cos(goldenAngle) * rx, 36, viewWidth - 36),
+      y: clamp(cy + Math.sin(goldenAngle) * ry, 36, viewHeight - 36),
     };
   }
 
-  function syncCatCount(targetCount: number): void {
+  function computeDecorrelatedSeed(catId: number, slotIndex: number): number {
+    let s = (Math.imul(catId, 0x9e3779b1) ^ Math.imul(slotIndex + 1, 0x85ebca6b)) >>> 0;
+    s = Math.imul(s ^ (s >>> 16), 0xc2b2ae35) >>> 0;
+    return (s ^ (s >>> 13)) >>> 0 || 1;
+  }
+
+  function syncCatCount(targetCount: number, forceRebuild = false): void {
     const clamped = Math.max(1, Math.min(12, Math.round(targetCount)));
     settings.catCount = clamped;
 
+    if (forceRebuild) {
+      while (cats.length > 0) {
+        const removed = cats.pop();
+        if (removed) {
+          cardboardBox.release(removed.id);
+          updateCatPerch(removed.id, null);
+          removed.destroy();
+        }
+      }
+    }
+
+    const desiredBreeds = pickDiverseBreedOrder(
+      clamped,
+      settings.breedMode,
+      breedRotationOffset,
+    );
+
     while (cats.length < clamped) {
       const idx = cats.length;
-      const breed = CAT_BREEDS[idx % CAT_BREEDS.length];
+      const breed = desiredBreeds[idx] ?? desiredBreeds[idx % desiredBreeds.length];
       const spawn = computeCatSpawnPoint(idx);
-      const cat = new CatEntity(nextCatId++, breed, spawn.x, spawn.y);
+      const id = nextCatId++;
+      const seed = computeDecorrelatedSeed(id, idx);
+      const coatVariantIndex =
+        settings.breedMode === 'mix' ? Math.floor(idx / 6) : idx;
+      const cat = new CatEntity(id, breed, spawn.x, spawn.y, {
+        seed,
+        coatVariantIndex,
+      });
       cat.attachShadowTo(shadowsLayer);
       catsLayer.addChild(cat);
       cats.push(cat);
@@ -446,25 +526,32 @@ async function bootstrap(): Promise<void> {
     const effective = lightingOverlay.getEffectiveLighting();
     const laserActive = isLaserCurrentlyActive();
     const splitPrism = prismLaser.isSplitActive();
+    const activeTreatsCount = scenePropsOverlay.getActiveTreats().length;
+    lastTrackedTreatCount = activeTreatsCount;
 
     hud.setStats({
+      sceneTheme: settings.sceneTheme,
+      catCount: cats.length,
       pounces,
       bonks,
       laserActive,
       splitPrism,
+      activeTreatsCount,
       paused,
       lightingMode: settings.lightingMode,
       effectiveLighting: effective,
-      sceneTheme: settings.sceneTheme,
       visible: settings.showHud,
     });
 
-    dock.setState({
+    dock?.setState({
       sceneTheme: settings.sceneTheme,
       lightingMode: settings.lightingMode,
       laserActive,
       boxVisible: cardboardBox.isVisible(),
       catCount: settings.catCount,
+      breedMode: settings.breedMode,
+      propsVisible: settings.showSceneProps,
+      activeTreatsCount,
       hudVisible: settings.showHud,
       debugMode: settings.debugMode,
       visible: settings.showToyDock,
@@ -496,7 +583,13 @@ async function bootstrap(): Promise<void> {
 
     for (const cat of sorted) {
       const state = cat.getState();
-      if (state === 'IDLE' || state === 'WANDER' || triggered === 0) {
+      if (
+        state === 'IDLE' ||
+        state === 'WANDER' ||
+        state === 'LOAFING' ||
+        state === 'GROOMING' ||
+        triggered === 0
+      ) {
         cat.triggerInvestigate(point);
         triggered++;
         if (triggered >= 3) {
@@ -506,7 +599,49 @@ async function bootstrap(): Promise<void> {
     }
   }
 
-  function setSceneTheme(theme: SceneTheme): void {
+  function attractCatsToTreat(treatId: string, maxCats = 2): void {
+    const treat = scenePropsOverlay.getActiveTreats().find((t) => t.id === treatId);
+    if (!treat) return;
+
+    const sorted = [...cats].sort((a, b) => {
+      const pa = a.getPosition();
+      const pb = b.getPosition();
+      return Math.hypot(pa.x - treat.x, pa.y - treat.y) - Math.hypot(pb.x - treat.x, pb.y - treat.y);
+    });
+
+    let count = 0;
+    for (const cat of sorted) {
+      const state = cat.getState();
+      if (state === 'EATING_TREAT' || state === 'BONK') continue;
+      cat.triggerTreatAttract(treat);
+      count++;
+      if (count >= maxCats) break;
+    }
+  }
+
+  function dropTreatAt(x?: number, y?: number, showToast = true): void {
+    const treat = scenePropsOverlay.spawnTreat(x, y);
+    particleSystem.spawnKibbleCrumbs(treat.x, treat.y, 5);
+    particleSystem.spawnPropBurst({
+      kind: 'sparkle',
+      x: treat.x,
+      y: treat.y - 4,
+      count: 5,
+    });
+    attractCatsToTreat(treat.id, 2);
+    if (showToast) {
+      hud.showInteractionToast({
+        kind: 'treat',
+        title: 'Fish Biscuit Treat',
+        subtitle: 'Tossed a crunchy snack onto the floor',
+        x: treat.x,
+        y: treat.y - 12,
+      });
+    }
+    refreshUiOverlays();
+  }
+
+  function setSceneTheme(theme: SceneTheme, notifyHost = true): void {
     const nextTheme = normalizeSceneTheme(theme);
     settings.sceneTheme = nextTheme;
     hardwoodFloor.setTheme(nextTheme);
@@ -515,25 +650,63 @@ async function bootstrap(): Promise<void> {
     scenePropsOverlay.setTheme(nextTheme);
     cardboardBox.setTheme(nextTheme);
     lightingOverlay.setTheme(nextTheme);
+    lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
     refreshUiOverlays();
+    if (notifyHost) {
+      notifyHostSettingsChanged({ sceneTheme: nextTheme });
+    }
   }
 
-  function setLightingMode(mode: LightingMode): void {
+  function setLightingMode(mode: LightingMode, notifyHost = true): void {
     settings.lightingMode = mode;
     lightingOverlay.setMode(mode);
     const effective = lightingOverlay.getEffectiveLighting();
+    scenePropsOverlay.setLightingMode(effective);
     if (effective !== lastEffectiveLighting) {
       lastEffectiveLighting = effective;
       iconMatsOverlay.setLighting(effective);
       scenePropsOverlay.setNightMode(effective === 'night');
     }
+    lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
     refreshUiOverlays();
+    if (notifyHost) {
+      notifyHostSettingsChanged({ lightingMode: mode });
+    }
   }
 
-  function setDebugMode(enabled: boolean): void {
+  function setBreedMode(mode: CatBreedMode, notifyHost = true): void {
+    const normalized = normalizeBreedMode(mode);
+    const changed = settings.breedMode !== normalized;
+    settings.breedMode = normalized;
+    if (changed) {
+      if (normalized === 'mix') {
+        breedRotationOffset = (breedRotationOffset + 1) % 6;
+      }
+      syncCatCount(settings.catCount, true);
+    }
+    refreshUiOverlays();
+    if (notifyHost) {
+      notifyHostSettingsChanged({ breedMode: normalized });
+    }
+  }
+
+  function setScenePropsVisible(visible: boolean, notifyHost = true): void {
+    settings.showSceneProps = visible;
+    scenePropsOverlay.setPropsEnabled(visible);
+    lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
+    refreshUiOverlays();
+    if (notifyHost) {
+      notifyHostSettingsChanged({ showSceneProps: visible });
+    }
+  }
+
+  function setDebugMode(enabled: boolean, notifyHost = true): void {
     settings.debugMode = enabled;
     debugVisualizer.setEnabled(enabled);
     refreshUiOverlays();
+    if (notifyHost) {
+      notifyHostSettingsChanged({ debugMode: enabled });
+    }
   }
 
   function toggleStickyLaser(): void {
@@ -550,6 +723,8 @@ async function bootstrap(): Promise<void> {
     const visible = cardboardBox.toggleVisible();
     if (!visible && cardboardBox.occupantId !== null) {
       cardboardBox.release(cardboardBox.occupantId);
+    } else if (visible) {
+      cardboardBox.triggerFlapRustle(undefined, 0.85);
     }
     refreshUiOverlays();
   }
@@ -618,22 +793,31 @@ async function bootstrap(): Promise<void> {
   dock = new ToyDock(
     dockRoot,
     {
-      onSelectScene: setSceneTheme,
-      onSelectLighting: setLightingMode,
+      onSelectScene: (theme) => setSceneTheme(theme, true),
+      onSelectLighting: (mode) => setLightingMode(mode, true),
       onToggleLaser: toggleStickyLaser,
       onTossYarn: tossYarnAcrossFloor,
       onCenterPrism: centerPrismProp,
       onToggleBox: toggleCardboardBox,
+      onDropTreat: () => dropTreatAt(undefined, undefined, true),
       onChangeCatCount: (nextCount) => {
         syncCatCount(nextCount);
         refreshUiOverlays();
+        notifyHostSettingsChanged({ catCount: settings.catCount });
+      },
+      onSelectBreedMode: (breedMode) => {
+        setBreedMode(breedMode, true);
       },
       onToggleHud: () => {
         settings.showHud = !settings.showHud;
         refreshUiOverlays();
+        notifyHostSettingsChanged({ showHud: settings.showHud });
       },
       onToggleDebug: () => {
-        setDebugMode(!settings.debugMode);
+        setDebugMode(!settings.debugMode, true);
+      },
+      onToggleProps: () => {
+        setScenePropsVisible(!settings.showSceneProps, true);
       },
       onNewFile: () => {
         const created = mockIcons.addTempFile();
@@ -660,10 +844,12 @@ async function bootstrap(): Promise<void> {
         settings.fpsCap = nextFps;
         frameAccumulator = 0;
         refreshUiOverlays();
+        notifyHostSettingsChanged({ fpsCap: settings.fpsCap });
       },
       onChangeIdleNapMinutes: (nextMinutes) => {
         settings.idleNapMinutes = Math.max(1, Math.min(60, Math.round(nextMinutes)));
         refreshUiOverlays();
+        notifyHostSettingsChanged({ idleNapMinutes: settings.idleNapMinutes });
       },
       onToggleLaserHotkey: () => {
         settings.enableLaserHotkey = !settings.enableLaserHotkey;
@@ -671,10 +857,12 @@ async function bootstrap(): Promise<void> {
           altHeld = false;
         }
         refreshUiOverlays();
+        notifyHostSettingsChanged({ enableLaserHotkey: settings.enableLaserHotkey });
       },
       onToggleShellReactions: () => {
         settings.enableShellReactions = !settings.enableShellReactions;
         refreshUiOverlays();
+        notifyHostSettingsChanged({ enableShellReactions: settings.enableShellReactions });
       },
     },
     {
@@ -683,6 +871,9 @@ async function bootstrap(): Promise<void> {
       laserActive: false,
       boxVisible: cardboardBox.isVisible(),
       catCount: settings.catCount,
+      breedMode: settings.breedMode,
+      propsVisible: settings.showSceneProps,
+      activeTreatsCount: 0,
       hudVisible: settings.showHud,
       debugMode: settings.debugMode,
       visible: settings.showToyDock,
@@ -713,8 +904,153 @@ async function bootstrap(): Promise<void> {
   scheduleIconMatsUpdate(initialIcons, false);
   refreshUiOverlays();
 
-  // Petting detector + stage prop dragging
+  // ============================================================================
+  // Crisp Priority Hit-Testing: UI Overlay -> Cat -> Interactive Prop -> Box/Yarn/Prism -> Floor Tap
+  // ============================================================================
+
   const pettingDetector = new PettingDetector();
+
+  let lastClickTimeMs = -Infinity;
+  let lastClickX = 0;
+  let lastClickY = 0;
+  let lastClickedCatId: number | null = null;
+
+  function handlePriorityCanvasClick(x: number, y: number, explicitDoubleClick?: boolean): boolean {
+    const nowMs = performance.now();
+    const isDoubleClick =
+      explicitDoubleClick ??
+      (nowMs - lastClickTimeMs <= 360 && Math.hypot(x - lastClickX, y - lastClickY) <= 22);
+    lastClickTimeMs = nowMs;
+    lastClickX = x;
+    lastClickY = y;
+
+    // 1. Priority 1: Clicked Cat
+    const clickedCat = hitTestCat(cats, x, y);
+    if (clickedCat) {
+      const sameCatDouble = isDoubleClick && lastClickedCatId === clickedCat.id;
+      lastClickedCatId = clickedCat.id;
+      const reaction = onCatClicked(clickedCat, sameCatDouble);
+      hud.showInteractionToast({
+        kind: 'cat',
+        title: `${reaction.name} \u00b7 ${reaction.breedLabel}`,
+        subtitle: reaction.caption,
+        x: reaction.x,
+        y: reaction.y,
+      });
+      return true;
+    }
+    lastClickedCatId = null;
+
+    // 2. Priority 2: Clicked Interactive Scene Prop (or dropped treat / ambient butterfly)
+    if (scenePropsOverlay.isPropsEnabled()) {
+      const propHit = scenePropsOverlay.handlePointerClick(x, y);
+      if (propHit) {
+        lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
+        for (const burst of propHit.particles) {
+          particleSystem.spawnPropBurst(burst);
+        }
+
+        if (propHit.spawnedTreatPoint) {
+          const latestTreats = scenePropsOverlay.getActiveTreats();
+          const newest = latestTreats[latestTreats.length - 1];
+          if (newest) {
+            attractCatsToTreat(newest.id, 2);
+          }
+        } else if (propHit.prop.isActive || propHit.attractDurationSec > 0) {
+          const sorted = [...cats].sort((a, b) => {
+            const pa = a.getPosition();
+            const pb = b.getPosition();
+            return (
+              Math.hypot(pa.x - propHit.attractPoint.x, pa.y - propHit.attractPoint.y) -
+              Math.hypot(pb.x - propHit.attractPoint.x, pb.y - propHit.attractPoint.y)
+            );
+          });
+          let lured = 0;
+          const maxLured = propHit.interactionType === 'catnip' ? 2 : 1;
+          for (const cat of sorted) {
+            const state = cat.getState();
+            if (state === 'BONK' || state === 'EATING_TREAT') continue;
+            const pos = cat.getPosition();
+            const dist = Math.hypot(pos.x - propHit.attractPoint.x, pos.y - propHit.attractPoint.y);
+            if (dist <= propHit.attractRadius * 1.45 || lured === 0) {
+              cat.triggerPropAttract(propHit.prop, propHit.attractPoint);
+              lured++;
+              if (lured >= maxLured) break;
+            }
+          }
+        }
+
+        hud.showInteractionToast({
+          kind: 'prop',
+          title: propHit.label,
+          subtitle: propHit.feedbackText,
+          x: propHit.prop.x,
+          y: propHit.prop.y - propHit.prop.radius,
+        });
+        refreshUiOverlays();
+        return true;
+      }
+    }
+
+    // 3. Priority 3: Tapping Box / Yarn / Prism directly (when not dragged)
+    if (yarnBall.containsPoint(x, y)) {
+      tossYarnAcrossFloor();
+      return true;
+    }
+    if (cardboardBox.isVisible() && cardboardBox.containsPoint(x, y)) {
+      cardboardBox.triggerFlapRustle(undefined, 1.0);
+      const bp = cardboardBox.getPosition();
+      particleSystem.spawnDustPuff(bp.x, bp.y, 0, -24);
+      if (cardboardBox.occupantId !== null) {
+        const occupant = cats.find((c) => c.id === cardboardBox.occupantId);
+        if (occupant) {
+          const reaction = onCatClicked(occupant, isDoubleClick);
+          hud.showInteractionToast({
+            kind: 'cat',
+            title: `${reaction.name} \u00b7 ${reaction.breedLabel}`,
+            subtitle: reaction.caption,
+            x: reaction.x,
+            y: reaction.y,
+          });
+        }
+      } else {
+        hud.showInteractionToast({
+          kind: 'prop',
+          title: 'Cardboard Box',
+          subtitle: 'Rustled flaps to invite a curious cat',
+          x: bp.x,
+          y: bp.y - 36,
+        });
+        investigatePoint(bp);
+      }
+      return true;
+    }
+    if (prismLaser.containsPrismPoint(x, y)) {
+      particleSystem.spawnClickRipple(x, y, 0x72e5ff);
+      return true;
+    }
+
+    // 4. Priority 4: Empty Floor Tap (double-click drops treat; single click triggers ripple & curious glance)
+    particleSystem.spawnClickRipple(x, y);
+    if (isDoubleClick) {
+      dropTreatAt(x, y, true);
+      return true;
+    }
+
+    // Cue nearest 1-2 cats for a curious glance or meerkat peek toward the floor tap
+    const sorted = [...cats].sort((a, b) => {
+      const pa = a.getPosition();
+      const pb = b.getPosition();
+      return Math.hypot(pa.x - x, pa.y - y) - Math.hypot(pb.x - x, pb.y - y);
+    });
+    let glanced = 0;
+    for (const cat of sorted) {
+      cat.triggerCuriosityGlance({ x, y });
+      glanced++;
+      if (glanced >= 2) break;
+    }
+    return false;
+  }
 
   type DragPropKind = 'prism' | 'yarn' | 'box';
   let activeStageDrag: {
@@ -722,6 +1058,8 @@ async function bootstrap(): Promise<void> {
     pointerId: number;
     grabOffsetX: number;
     grabOffsetY: number;
+    startX: number;
+    startY: number;
     lastX: number;
     lastY: number;
     lastTimeMs: number;
@@ -739,6 +1077,22 @@ async function bootstrap(): Promise<void> {
     cursorPos.y = e.clientY;
     dock.dismissHint();
 
+    // Check Priority 1 (Cat) & Priority 2 (Interactive Scene Prop) immediately on pointerdown!
+    const hitCat = hitTestCat(cats, e.clientX, e.clientY);
+    if (hitCat) {
+      handlePriorityCanvasClick(e.clientX, e.clientY);
+      return;
+    }
+
+    if (
+      scenePropsOverlay.isPropsEnabled() &&
+      scenePropsOverlay.handlePointerMove(e.clientX, e.clientY) !== null
+    ) {
+      handlePriorityCanvasClick(e.clientX, e.clientY);
+      return;
+    }
+
+    // Check Priority 3 (Draggable Prism / Yarn / Cardboard Box)
     let kind: DragPropKind | null = null;
     let grabOffsetX = 0;
     let grabOffsetY = 0;
@@ -768,6 +1122,8 @@ async function bootstrap(): Promise<void> {
         pointerId: e.pointerId,
         grabOffsetX,
         grabOffsetY,
+        startX: e.clientX,
+        startY: e.clientY,
         lastX: e.clientX,
         lastY: e.clientY,
         lastTimeMs: performance.now(),
@@ -775,7 +1131,11 @@ async function bootstrap(): Promise<void> {
         vy: 0,
         moved: false,
       };
+      return;
     }
+
+    // Priority 4: Floor tap
+    handlePriorityCanvasClick(e.clientX, e.clientY);
   });
 
   window.addEventListener('pointermove', (e: PointerEvent) => {
@@ -790,7 +1150,7 @@ async function bootstrap(): Promise<void> {
       const instVy = (e.clientY - activeStageDrag.lastY) / dtSec;
       activeStageDrag.vx = activeStageDrag.vx * 0.55 + instVx * 0.45;
       activeStageDrag.vy = activeStageDrag.vy * 0.55 + instVy * 0.45;
-      if (Math.hypot(e.clientX - activeStageDrag.lastX, e.clientY - activeStageDrag.lastY) > 2) {
+      if (Math.hypot(e.clientX - activeStageDrag.startX, e.clientY - activeStageDrag.startY) > 5) {
         activeStageDrag.moved = true;
       }
       activeStageDrag.lastX = e.clientX;
@@ -816,6 +1176,20 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
+    const hoveredProp = scenePropsOverlay.handlePointerMove(e.clientX, e.clientY);
+    const hoveredCat = hitTestCat(cats, e.clientX, e.clientY);
+    if (hoveredCat || hoveredProp) {
+      app.canvas.style.cursor = 'pointer';
+    } else if (
+      prismLaser.containsPrismPoint(e.clientX, e.clientY) ||
+      yarnBall.containsPoint(e.clientX, e.clientY) ||
+      (cardboardBox.isVisible() && cardboardBox.containsPoint(e.clientX, e.clientY))
+    ) {
+      app.canvas.style.cursor = 'grab';
+    } else {
+      app.canvas.style.cursor = '';
+    }
+
     pettingDetector.recordCursor(e.clientX, e.clientY, nowMs / 1000, cats, particleSystem);
   });
 
@@ -826,6 +1200,7 @@ async function bootstrap(): Promise<void> {
     if (stageRoot.hasPointerCapture(e.pointerId)) {
       stageRoot.releasePointerCapture(e.pointerId);
     }
+    const wasTap = !activeStageDrag.moved;
     if (activeStageDrag.kind === 'yarn') {
       if (activeStageDrag.moved && Math.hypot(activeStageDrag.vx, activeStageDrag.vy) > 40) {
         yarnBall.toss(
@@ -835,6 +1210,8 @@ async function bootstrap(): Promise<void> {
       } else {
         tossYarnAcrossFloor();
       }
+    } else if (wasTap && activeStageDrag.kind === 'box') {
+      handlePriorityCanvasClick(e.clientX, e.clientY);
     }
     activeStageDrag = null;
   };
@@ -871,7 +1248,7 @@ async function bootstrap(): Promise<void> {
     if (!isTextInput && !e.ctrlKey && !e.altKey && !e.metaKey && !e.repeat) {
       if (e.key === 'd' || e.key === 'D' || e.code === 'KeyD') {
         dock.dismissHint();
-        setDebugMode(!settings.debugMode);
+        setDebugMode(!settings.debugMode, true);
         return;
       }
     }
@@ -907,6 +1284,7 @@ async function bootstrap(): Promise<void> {
     iconMatsOverlay.resize(viewWidth, viewHeight);
     scenePropsOverlay.resize(viewWidth, viewHeight, surfaceManager.getRugBounds());
     lightingOverlay.resize(viewWidth, viewHeight);
+    lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
     prismLaser.resize(viewWidth, viewHeight);
     mockIcons.resize(viewWidth, viewHeight);
 
@@ -916,24 +1294,24 @@ async function bootstrap(): Promise<void> {
     cardboardBox.setPosition(clamp(bp.x, 56, viewWidth - 56), clamp(bp.y, 56, viewHeight - 56));
   });
 
-  // Win32 WebView2 IPC Bridge
-  const webview = window.chrome?.webview;
-
-  function postToHost(msg: RendererToHostMessage): void {
-    webview?.postMessage(msg);
-  }
-
   function applySettingsUpdate(next: NekoSettings): void {
     const prevCatCount = settings.catCount;
     const prevLighting = settings.lightingMode;
     const prevSceneTheme = settings.sceneTheme;
+    const prevBreedMode = settings.breedMode;
+    const prevShowProps = settings.showSceneProps;
     const prevDebug = settings.debugMode;
 
     Object.assign(settings, next);
     settings.sceneTheme = normalizeSceneTheme(next.sceneTheme);
+    settings.breedMode = normalizeBreedMode(next.breedMode);
+    settings.showSceneProps =
+      typeof next.showSceneProps === 'boolean' ? next.showSceneProps : true;
 
-    if (settings.catCount !== prevCatCount) {
-      syncCatCount(settings.catCount);
+    if (settings.breedMode !== prevBreedMode) {
+      syncCatCount(settings.catCount, true);
+    } else if (settings.catCount !== prevCatCount) {
+      syncCatCount(settings.catCount, false);
     }
     if (settings.sceneTheme !== prevSceneTheme) {
       hardwoodFloor.setTheme(settings.sceneTheme);
@@ -943,15 +1321,20 @@ async function bootstrap(): Promise<void> {
       cardboardBox.setTheme(settings.sceneTheme);
       lightingOverlay.setTheme(settings.sceneTheme);
     }
+    if (settings.showSceneProps !== prevShowProps) {
+      scenePropsOverlay.setPropsEnabled(settings.showSceneProps);
+    }
     if (settings.lightingMode !== prevLighting) {
       lightingOverlay.setMode(settings.lightingMode);
       const effective = lightingOverlay.getEffectiveLighting();
+      scenePropsOverlay.setLightingMode(effective);
       if (effective !== lastEffectiveLighting) {
         lastEffectiveLighting = effective;
         iconMatsOverlay.setLighting(effective);
         scenePropsOverlay.setNightMode(effective === 'night');
       }
     }
+    lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
     if (settings.debugMode !== prevDebug) {
       debugVisualizer.setEnabled(settings.debugMode);
     }
@@ -1006,8 +1389,19 @@ async function bootstrap(): Promise<void> {
         }
         hostLaserActive = msg.laserMode;
         hostSplitPrism = msg.splitPrism;
+        scenePropsOverlay.handlePointerMove(msg.x, msg.y);
         pettingDetector.recordCursor(msg.x, msg.y, performance.now() / 1000, cats, particleSystem);
         refreshUiOverlays();
+        break;
+      }
+
+      case 'POINTER_CLICK': {
+        cursorPos.x = msg.x;
+        cursorPos.y = msg.y;
+        localLastActivityMs = performance.now();
+        if (msg.button === 'left') {
+          handlePriorityCanvasClick(msg.x, msg.y, msg.doubleClick);
+        }
         break;
       }
 
@@ -1084,6 +1478,14 @@ async function bootstrap(): Promise<void> {
             toggleCardboardBox();
             break;
           }
+          case 'dropTreat': {
+            dropTreatAt(undefined, undefined, true);
+            break;
+          }
+          case 'toggleProps': {
+            setScenePropsVisible(!settings.showSceneProps, true);
+            break;
+          }
         }
         break;
       }
@@ -1097,13 +1499,13 @@ async function bootstrap(): Promise<void> {
         handleHostMessage(parsed);
       }
     });
-    postToHost({ type: 'READY', rendererVersion: '0.1.0' });
+    postToHost({ type: 'READY', rendererVersion: '0.2.0' });
   }
 
   function sendStatsUpdate(): void {
     let nappingCats = 0;
     for (const cat of cats) {
-      if (cat.getState() === 'NAP') {
+      if (cat.getState() === 'NAP' || cat.getState() === 'SUNBATHE') {
         nappingCats++;
       }
     }
@@ -1150,12 +1552,17 @@ async function bootstrap(): Promise<void> {
     if (effectiveLighting !== lastEffectiveLighting) {
       lastEffectiveLighting = effectiveLighting;
       iconMatsOverlay.setLighting(effectiveLighting);
+      scenePropsOverlay.setLightingMode(effectiveLighting);
       scenePropsOverlay.setNightMode(effectiveLighting === 'night');
+      lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
       refreshUiOverlays();
     }
 
-    // Update ambient scene props (koi fish, butterflies, steam wisps, sakura petals, feather toy)
+    // Update ambient & interactive scene props (koi fish, butterflies, steam wisps, sakura petals, treats)
     scenePropsOverlay.update(stepDt);
+
+    // Update cardboard box flap flex & recoil springs
+    cardboardBox.update(stepDt);
 
     // Smoothly animate desktop icon mat transitions & drop fade-ins
     iconMatsOverlay.update(stepDt);
@@ -1166,9 +1573,15 @@ async function bootstrap(): Promise<void> {
     prismLaser.update(stepDt);
 
     const splitActive = prismLaser.isSplitActive();
-    if (laserActive !== lastHudLaserActive || splitActive !== lastHudSplitPrism) {
+    const currentTreatsCount = scenePropsOverlay.getActiveTreats().length;
+    if (
+      laserActive !== lastHudLaserActive ||
+      splitActive !== lastHudSplitPrism ||
+      currentTreatsCount !== lastTrackedTreatCount
+    ) {
       lastHudLaserActive = laserActive;
       lastHudSplitPrism = splitActive;
+      lastTrackedTreatCount = currentTreatsCount;
       refreshUiOverlays();
     }
 
@@ -1195,18 +1608,18 @@ async function bootstrap(): Promise<void> {
       }
     }
 
-    // Periodic curiosity toward scene-specific props (koi pond, bonsai, bistro table, cat beds, bowls)
-    if (!laserActive) {
+    // Periodic organic curiosity toward scene-specific props when not chasing laser
+    if (!laserActive && scenePropsOverlay.isPropsEnabled()) {
       sceneCuriosityTimer -= stepDt;
       if (sceneCuriosityTimer <= 0) {
-        sceneCuriosityTimer = 11 + Math.random() * 8;
-        const spots = scenePropsOverlay.getCuriositySpots();
-        if (spots.length > 0 && cats.length > 0) {
-          const spot = spots[sceneCuriosityCursor % spots.length];
+        sceneCuriosityTimer = 12 + Math.random() * 9;
+        const props = scenePropsOverlay.getInteractiveProps();
+        if (props.length > 0 && cats.length > 0) {
+          const prop = props[sceneCuriosityCursor % props.length];
           sceneCuriosityCursor++;
           const candidate =
             cats.find((c) => c.getState() === 'IDLE' || c.getState() === 'WANDER') ?? null;
-          candidate?.triggerInvestigate({ x: spot.x, y: spot.y });
+          candidate?.triggerPropAttract(prop, prop.interactPoint);
         }
       }
     }
@@ -1216,7 +1629,7 @@ async function bootstrap(): Promise<void> {
       yarnBall.update(stepDt, physics, particleSystem);
     }
 
-    // Update all cats
+    // Update all cats with full world, prop, warm-zone, treat, critter & social context
     const catCtx: CatContext = {
       physics,
       surfaceManager,
@@ -1224,6 +1637,12 @@ async function bootstrap(): Promise<void> {
       yarnBall,
       cardboardBox,
       sceneObstacles: scenePropsOverlay.getObstacles(),
+      interactiveProps: scenePropsOverlay.getInteractiveProps(),
+      warmZones: scenePropsOverlay.getWarmZones(),
+      activeTreats: scenePropsOverlay.getActiveTreats(),
+      ambientCritters: scenePropsOverlay.getAmbientCritters(),
+      otherCats: cats,
+      cursorPos,
       particles: particleSystem,
       idleSeconds,
       idleNapSeconds,
@@ -1244,6 +1663,18 @@ async function bootstrap(): Promise<void> {
       onIconPerchChange: (catId, iconId) => {
         updateCatPerch(catId, iconId);
       },
+      onPropInteract: (propId, cat) => {
+        const bursts = scenePropsOverlay.notifyCatInteract(propId, cat.id);
+        for (const burst of bursts) {
+          particleSystem.spawnPropBurst(burst);
+        }
+        lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
+      },
+      onConsumeTreat: (treatId, cat) => {
+        const finished = scenePropsOverlay.consumeTreatBite(treatId, cat.id);
+        refreshUiOverlays();
+        return finished;
+      },
     };
 
     for (const cat of cats) {
@@ -1263,7 +1694,9 @@ async function bootstrap(): Promise<void> {
         const catB = cats[j];
         const stateB = catB.getState();
         if (isCatCollisionExempt(stateB)) continue;
-        if (stateA === 'NAP' && stateB === 'NAP') continue;
+        if ((stateA === 'NAP' || stateA === 'SUNBATHE') && (stateB === 'NAP' || stateB === 'SUNBATHE')) {
+          continue;
+        }
         physics.resolveCircleCircle(catA.getBody(), catB.getBody(), 0.45);
       }
     }
@@ -1281,11 +1714,15 @@ async function bootstrap(): Promise<void> {
       debugVisualizer.update({
         icons: physics.getObstacles(),
         rug: surfaceManager.getRugBounds(),
+        props: scenePropsOverlay.getInteractiveProps(),
+        treats: scenePropsOverlay.getActiveTreats(),
+        warmZones: scenePropsOverlay.getWarmZones(),
         cats: cats.map((cat) => {
           const pos = cat.getPosition();
           const vel = cat.getVelocity();
           return {
             id: cat.id,
+            name: cat.getName(),
             x: pos.x,
             y: pos.y,
             vx: vel.x,
@@ -1293,8 +1730,12 @@ async function bootstrap(): Promise<void> {
             radius: cat.getRadius(),
             state: cat.getState(),
             breed: cat.getBreed(),
+            mood: cat.getMood(),
+            personality: cat.getPersonality(),
+            activePropId: cat.getActivePropId(),
             zHeight: cat.getZHeight(),
             perchedIconId: cat.getPerchedIconId(),
+            jumpArc: cat.getJumpArcDebug(),
           };
         }),
         prism: {
@@ -1335,7 +1776,7 @@ async function bootstrap(): Promise<void> {
     getStateSummary: () => {
       let nappingCats = 0;
       for (const cat of cats) {
-        if (cat.getState() === 'NAP') {
+        if (cat.getState() === 'NAP' || cat.getState() === 'SUNBATHE') {
           nappingCats++;
         }
       }
@@ -1351,6 +1792,10 @@ async function bootstrap(): Promise<void> {
         lightingMode: settings.lightingMode,
         effectiveLighting: lightingOverlay.getEffectiveLighting(),
         sceneTheme: settings.sceneTheme,
+        breedMode: settings.breedMode,
+        showSceneProps: settings.showSceneProps,
+        activeTreatsCount: scenePropsOverlay.getActiveTreats().length,
+        interactivePropsCount: scenePropsOverlay.getInteractiveProps().length,
         nativeHostConnected,
         fpsCap: settings.fpsCap,
       };
@@ -1361,7 +1806,11 @@ async function bootstrap(): Promise<void> {
         const vel = cat.getVelocity();
         return {
           id: cat.id,
+          name: cat.getName(),
           breed: cat.getBreed(),
+          mood: cat.getMood(),
+          personality: cat.getPersonality(),
+          activePropId: cat.getActivePropId(),
           state: cat.getState(),
           x: pos.x,
           y: pos.y,
@@ -1372,11 +1821,17 @@ async function bootstrap(): Promise<void> {
         };
       }),
     getObstacles: () => physics.getObstacles().map((obs) => ({ ...obs })),
+    getInteractiveProps: () => scenePropsOverlay.getInteractiveProps(),
     isSplitPrism: () => prismLaser.isSplitActive(),
     getLighting: () => ({
       mode: settings.lightingMode,
       effective: lightingOverlay.getEffectiveLighting(),
     }),
+    dropTreat: (x?: number, y?: number) => {
+      dropTreatAt(x, y, true);
+    },
+    clickAt: (x: number, y: number, doubleClick?: boolean) =>
+      handlePriorityCanvasClick(x, y, doubleClick),
   });
 
   Object.defineProperty(window, '__NEKOSCAPE__', {

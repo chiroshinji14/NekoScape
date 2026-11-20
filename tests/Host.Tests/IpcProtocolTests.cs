@@ -176,4 +176,89 @@ public sealed class IpcProtocolTests
         var roundTrip = Assert.IsType<SettingsUpdateMessage>(IpcChannel.DeserializeHostMessage(json));
         Assert.Equal(sceneTheme, roundTrip.Settings.SceneTheme);
     }
+
+    [Fact]
+    public void PointerClick_SerializesCamelCase_OmitsNullDoubleClick_AndRoundTrips()
+    {
+        var singleClick = new PointerClickMessage(412.5, 298.25, PointerButtons.Left);
+        string singleJson = IpcChannel.SerializeHostMessage(singleClick);
+        using (JsonDocument doc = JsonDocument.Parse(singleJson))
+        {
+            JsonElement root = doc.RootElement;
+            Assert.Equal("POINTER_CLICK", root.GetProperty("type").GetString());
+            Assert.Equal(412.5, root.GetProperty("x").GetDouble());
+            Assert.Equal(298.25, root.GetProperty("y").GetDouble());
+            Assert.Equal("left", root.GetProperty("button").GetString());
+            Assert.False(root.TryGetProperty("doubleClick", out _));
+        }
+
+        var singleRoundTrip = Assert.IsType<PointerClickMessage>(IpcChannel.DeserializeHostMessage(singleJson));
+        Assert.Equal(singleClick, singleRoundTrip);
+
+        var doubleClick = new PointerClickMessage(520.0, 310.0, PointerButtons.Left, DoubleClick: true);
+        string doubleJson = IpcChannel.SerializeHostMessage(doubleClick);
+        using (JsonDocument doc = JsonDocument.Parse(doubleJson))
+        {
+            Assert.True(doc.RootElement.GetProperty("doubleClick").GetBoolean());
+        }
+
+        var doubleRoundTrip = Assert.IsType<PointerClickMessage>(IpcChannel.DeserializeHostMessage(doubleJson));
+        Assert.True(doubleRoundTrip.DoubleClick);
+    }
+
+    [Fact]
+    public void SpawnActions_DropTreatAndToggleProps_SerializeAndRoundTrip()
+    {
+        var treatMsg = new SpawnActionMessage(SpawnActions.DropTreat);
+        var treatRoundTrip = Assert.IsType<SpawnActionMessage>(
+            IpcChannel.DeserializeHostMessage(IpcChannel.SerializeHostMessage(treatMsg)));
+        Assert.Equal("dropTreat", treatRoundTrip.Action);
+
+        var propsMsg = new SpawnActionMessage(SpawnActions.ToggleProps);
+        var propsRoundTrip = Assert.IsType<SpawnActionMessage>(
+            IpcChannel.DeserializeHostMessage(IpcChannel.SerializeHostMessage(propsMsg)));
+        Assert.Equal("toggleProps", propsRoundTrip.Action);
+    }
+
+    [Fact]
+    public void SettingsChanged_RendererToHostMessage_DeserializesPartialPatch()
+    {
+        string json = """{"type":"SETTINGS_CHANGED","settings":{"sceneTheme":"garden","breedMode":"sphynx","showSceneProps":false,"catCount":4}}""";
+        var msg = Assert.IsType<SettingsChangedMessage>(IpcChannel.DeserializeRendererMessage(json));
+        Assert.NotNull(msg.Settings);
+        Assert.Equal("garden", msg.Settings.SceneTheme);
+        Assert.Equal("sphynx", msg.Settings.BreedMode);
+        Assert.False(msg.Settings.ShowSceneProps);
+        Assert.Equal(4, msg.Settings.CatCount);
+        Assert.Null(msg.Settings.FpsCap);
+
+        NekoSettings applied = msg.Settings.ApplyTo(new NekoSettings());
+        Assert.Equal("garden", applied.SceneTheme);
+        Assert.Equal("sphynx", applied.BreedMode);
+        Assert.False(applied.ShowSceneProps);
+        Assert.Equal(4, applied.CatCount);
+        Assert.Equal(60, applied.FpsCap);
+    }
+
+    [Fact]
+    public void SettingsUpdate_IncludesBreedModeShowScenePropsAndShowHud()
+    {
+        var msg = new SettingsUpdateMessage(new NekoSettings
+        {
+            BreedMode = "munchkin",
+            ShowSceneProps = false,
+            ShowHud = false,
+        });
+        string json = IpcChannel.SerializeHostMessage(msg);
+        using JsonDocument doc = JsonDocument.Parse(json);
+        JsonElement s = doc.RootElement.GetProperty("settings");
+        Assert.Equal("munchkin", s.GetProperty("breedMode").GetString());
+        Assert.False(s.GetProperty("showSceneProps").GetBoolean());
+        Assert.False(s.GetProperty("showHud").GetBoolean());
+
+        var roundTrip = Assert.IsType<SettingsUpdateMessage>(IpcChannel.DeserializeHostMessage(json));
+        Assert.Equal("munchkin", roundTrip.Settings.BreedMode);
+        Assert.False(roundTrip.Settings.ShowSceneProps);
+        Assert.False(roundTrip.Settings.ShowHud);
+    }
 }

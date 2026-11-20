@@ -105,6 +105,8 @@ public static class Win32Api
     // DWM attributes
     public const uint DWMWA_EXTENDED_FRAME_BOUNDS = 9;
     public const uint DWMWA_CLOAKED = 14;
+    public const uint DWMWA_USE_IMMUTABLE_DARK_MODE_BEFORE_20H1 = 19;
+    public const uint DWMWA_USE_IMMUTABLE_DARK_MODE = 20;
     public const uint DWMWA_WINDOW_CORNER_PREFERENCE = 33;
     public const int DWMWCP_ROUND = 2;
 
@@ -527,6 +529,27 @@ public static class Win32Api
         catch
         {
             // Ignore on older OS versions where DWMWA_WINDOW_CORNER_PREFERENCE is unsupported.
+        }
+    }
+
+    public static void TryEnableDarkTitleBar(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        try
+        {
+            int enabled = 1;
+            if (DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMUTABLE_DARK_MODE, ref enabled, sizeof(int)) != 0)
+            {
+                _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMUTABLE_DARK_MODE_BEFORE_20H1, ref enabled, sizeof(int));
+            }
+        }
+        catch
+        {
+            // Ignore on older OS versions where dark title bar attribute is unsupported.
         }
     }
 

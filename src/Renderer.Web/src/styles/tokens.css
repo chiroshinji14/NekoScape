@@ -1,6 +1,6 @@
 :root {
   /* Typography */
-  --font-display: 'Outfit', 'Segoe UI Variable', system-ui, sans-serif;
+  --font-display: 'Outfit', 'Segoe UI Variable', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
 
   /* Golden-Hour Study Floor Palette (OKLCH) */
@@ -9,35 +9,62 @@
   --floor-rug-cream: oklch(0.9024 0.0315 79.92);
   --floor-vignette: oklch(0.1908 0.0166 53.46 / 0.36);
 
-  /* Warm Espresso Double-Bezel Surface Tokens (OKLCH) */
-  --surface-espresso-glass: oklch(0.2252 0.0210 49.88 / 0.74);
-  --surface-espresso-solid: oklch(0.2252 0.0210 49.88);
-  --surface-espresso-elevated: oklch(0.2680 0.0240 49.88 / 0.84);
+  /* Warm Espresso Translucent Glass Surfaces (OKLCH) */
+  --surface-espresso-glass: oklch(0.2080 0.0190 49.50 / 0.78);
+  --surface-espresso-solid: oklch(0.2000 0.0180 49.50);
+  --surface-espresso-elevated: oklch(0.2680 0.0225 49.50 / 0.90);
+  --surface-track: oklch(0.1550 0.0150 49.50 / 0.62);
+  --surface-tile: oklch(0.9500 0.0200 74.00 / 0.055);
+  --surface-tile-hover: oklch(0.9500 0.0200 74.00 / 0.115);
+
   --bezel-outer-border: oklch(0.9373 0.0284 74.30 / 0.14);
   --bezel-inner-highlight: oklch(0.9818 0.0152 77.07 / 0.12);
+  --bezel-hairline: oklch(0.9373 0.0284 74.30 / 0.09);
   --bezel-shadow:
-    0 12px 32px oklch(0.1908 0.0166 53.46 / 0.42),
-    0 2px 6px oklch(0.1908 0.0166 53.46 / 0.28);
-  --bezel-backdrop: blur(18px) saturate(140%);
+    0 14px 36px oklch(0.1400 0.0140 50.00 / 0.44),
+    0 2px 8px oklch(0.1400 0.0140 50.00 / 0.28);
+  --bezel-shadow-soft:
+    0 8px 24px oklch(0.1400 0.0140 50.00 / 0.34),
+    0 1px 4px oklch(0.1400 0.0140 50.00 / 0.22);
+  --bezel-backdrop: blur(20px) saturate(180%);
 
   /* Text & Semantic Accents (OKLCH) */
-  --text-primary: oklch(0.9479 0.0182 70.24);
-  --text-secondary: oklch(0.8005 0.0308 70.64);
-  --accent-amber: oklch(0.7738 0.1190 67.23);
-  --accent-amber-soft: oklch(0.7738 0.1190 67.23 / 0.18);
-  --accent-crimson: oklch(0.6300 0.1604 26.73);
-  --accent-crimson-soft: oklch(0.6300 0.1604 26.73 / 0.18);
-  --accent-sage: oklch(0.6605 0.0751 139.95);
+  --text-primary: oklch(0.9520 0.0170 72.00);
+  --text-secondary: oklch(0.8120 0.0260 70.50);
+  --text-muted: oklch(0.7080 0.0220 70.00);
+  --text-on-accent: oklch(0.1950 0.0190 50.00);
 
-  /* Motion & Easing */
+  --accent-amber: oklch(0.7780 0.1180 67.20);
+  --accent-amber-soft: oklch(0.7780 0.1180 67.20 / 0.18);
+  --accent-amber-border: oklch(0.7780 0.1180 67.20 / 0.52);
+
+  --accent-crimson: oklch(0.6520 0.1620 26.50);
+  --accent-crimson-soft: oklch(0.6520 0.1620 26.50 / 0.20);
+  --accent-crimson-border: oklch(0.6520 0.1620 26.50 / 0.52);
+
+  --accent-sage: oklch(0.6950 0.0820 142.00);
+  --accent-sage-soft: oklch(0.6950 0.0820 142.00 / 0.18);
+
+  --accent-treat: oklch(0.7680 0.1280 56.00);
+  --accent-treat-soft: oklch(0.7680 0.1280 56.00 / 0.18);
+
+  /* Scene Accent Dots */
+  --scene-study: oklch(0.7780 0.1180 67.20);
+  --scene-tatami: oklch(0.7300 0.0950 116.00);
+  --scene-garden: oklch(0.6950 0.1050 148.00);
+  --scene-cafe: oklch(0.6900 0.1150 38.00);
+
+  /* Motion & Easing (Emil Kowalski curves) */
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
   --duration-fast: 150ms;
-  --duration-base: 220ms;
+  --duration-base: 210ms;
+  --duration-toast: 220ms;
 
   /* Geometry & Spacing */
   --radius-pill: 9999px;
-  --radius-card: 14px;
+  --radius-panel: 20px;
+  --radius-card: 12px;
   --radius-sm: 8px;
   --space-1: 4px;
   --space-2: 8px;
@@ -50,6 +77,7 @@
   --z-stage: 1;
   --z-mock-icons: 10;
   --z-hud: 20;
+  --z-toast: 25;
   --z-dock: 30;
 }
 

@@ -1,3 +1,4 @@
+using NekoScape.Host.Bridge;
 using NekoScape.Host.Hooks;
 using NekoScape.Host.Native;
 using Xunit;
@@ -209,5 +210,77 @@ public sealed class OcclusionLogicTests
         Assert.True(laser.StickyLaser);
         Assert.True(laser.IsLaserActive(true));
         Assert.False(laser.IsLaserActive(false));
+    }
+
+    [Fact]
+    public void DesktopClickDetector_EmitsSingleAndDoubleClickOnEmptyDesktop_AndIgnoresIconsAndDrags()
+    {
+        var detector = new DesktopClickDetector();
+        DesktopIconRect[] icons =
+        [
+            new DesktopIconRect(0, 32, 32, 76, 84, "Recycle Bin", IsRecycleBin: true),
+            new DesktopIconRect(1, 32, 140, 76, 84, "Projects")
+        ];
+
+        // 1. Clean single click on empty wallpaper space
+        detector.OnLeftButtonDown(400, 300, 1000, isOnDesktopSurface: true, icons, 1920, 1080);
+        PointerClickMessage? click1 = detector.OnLeftButtonUp(402, 301, 1090, isOnDesktopSurface: true, icons, 1920, 1080);
+        Assert.NotNull(click1);
+        Assert.Equal(402, click1!.X);
+        Assert.Equal(301, click1.Y);
+        Assert.Equal(PointerButtons.Left, click1.Button);
+        Assert.Null(click1.DoubleClick);
+
+        // 2. Rapid second click near same location triggers doubleClick: true
+        detector.OnLeftButtonDown(404, 302, 1200, isOnDesktopSurface: true, icons, 1920, 1080);
+        PointerClickMessage? click2 = detector.OnLeftButtonUp(405, 302, 1260, isOnDesktopSurface: true, icons, 1920, 1080);
+        Assert.NotNull(click2);
+        Assert.True(click2!.DoubleClick);
+
+        // 3. Click on a desktop icon is ignored so Explorer icon clicks/double-clicks are unaffected
+        detector.OnLeftButtonDown(50, 60, 2000, isOnDesktopSurface: true, icons, 1920, 1080);
+        Assert.Null(detector.OnLeftButtonUp(50, 60, 2080, isOnDesktopSurface: true, icons, 1920, 1080));
+
+        // 4. Drag / marquee selection (> 8px movement) is ignored
+        detector.OnLeftButtonDown(500, 500, 3000, isOnDesktopSurface: true, icons, 1920, 1080);
+        Assert.Null(detector.OnLeftButtonUp(540, 520, 3150, isOnDesktopSurface: true, icons, 1920, 1080));
+
+        // 5. Long press (> 450ms) is ignored
+        detector.OnLeftButtonDown(600, 400, 4000, isOnDesktopSurface: true, icons, 1920, 1080);
+        Assert.Null(detector.OnLeftButtonUp(600, 400, 4600, isOnDesktopSurface: true, icons, 1920, 1080));
+
+        // 6. Click on a non-desktop window is ignored
+        detector.OnLeftButtonDown(600, 400, 5000, isOnDesktopSurface: false, icons, 1920, 1080);
+        Assert.Null(detector.OnLeftButtonUp(600, 400, 5080, isOnDesktopSurface: false, icons, 1920, 1080));
+
+        // 7. Click outside monitor logical bounds is ignored
+        detector.OnLeftButtonDown(-50, 200, 6000, isOnDesktopSurface: true, icons, 1920, 1080);
+        Assert.Null(detector.OnLeftButtonUp(-50, 200, 6060, isOnDesktopSurface: true, icons, 1920, 1080));
+    }
+
+    [Fact]
+    public void IsWindowOrDescendant_MatchesHostAndNestedWebViewChildren_AndRejectsOverlappingWindows()
+    {
+        IntPtr hostHwnd = new(0x1000);
+        IntPtr webViewWrapper = new(0x1001);
+        IntPtr chromeWidget = new(0x1002);
+        IntPtr renderHost = new(0x1003);
+        IntPtr overlappingApp = new(0x9000);
+
+        var parents = new Dictionary<IntPtr, IntPtr>
+        {
+            [renderHost] = chromeWidget,
+            [chromeWidget] = webViewWrapper,
+            [webViewWrapper] = hostHwnd,
+            [hostHwnd] = IntPtr.Zero,
+            [overlappingApp] = IntPtr.Zero,
+        };
+
+        IntPtr GetParent(IntPtr h) => parents.TryGetValue(h, out IntPtr p) ? p : IntPtr.Zero;
+
+        Assert.True(SystemTrayContext.IsWindowOrDescendant(hostHwnd, hostHwnd, GetParent));
+        Assert.True(SystemTrayContext.IsWindowOrDescendant(renderHost, hostHwnd, GetParent));
+        Assert.False(SystemTrayContext.IsWindowOrDescendant(overlappingApp, hostHwnd, GetParent));
+        Assert.False(SystemTrayContext.IsWindowOrDescendant(IntPtr.Zero, hostHwnd, GetParent));
     }
 }

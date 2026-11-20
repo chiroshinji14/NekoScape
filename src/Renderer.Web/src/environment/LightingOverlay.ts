@@ -1,12 +1,17 @@
 import { Container, Graphics, Sprite, Texture } from 'pixi.js';
-import type { LightingMode, SceneTheme } from '../types/simulation';
+import type {
+  EffectiveLightingMode,
+  LightingMode,
+  SceneTheme,
+  WarmZone,
+} from '../types/simulation';
 import {
   SCENE_THEME_DEFS,
   createSeededRng,
   type SceneThemeDefinition,
 } from './SceneThemes';
 
-export type EffectiveLightingMode = 'day' | 'golden' | 'night';
+export type { EffectiveLightingMode };
 
 interface MoteState {
   gfx: Graphics;
@@ -18,6 +23,18 @@ interface MoteState {
   phase: number;
   freq: number;
   radius: number;
+}
+
+interface WarmPoolSlot {
+  id: string;
+  x: number;
+  y: number;
+  radius: number;
+  targetIntensity: number;
+  currentIntensity: number;
+  phase: number;
+  outerSprite: Sprite;
+  coreSprite: Sprite;
 }
 
 export function resolveEffectiveMode(
@@ -52,11 +69,15 @@ export class LightingOverlay extends Container {
 
   private readonly gradeSprite: Sprite;
   private readonly beamSprite: Sprite;
+  private readonly warmZoneLayer: Container;
   private readonly moteLayer: Container;
   private readonly motes: MoteState[] = [];
+  private readonly warmPoolSlots = new Map<string, WarmPoolSlot>();
+  private externalWarmZones: WarmZone[] = [];
 
   private gradeTexture: Texture | null = null;
   private beamTexture: Texture | null = null;
+  private warmGlowTexture: Texture | null = null;
 
   constructor(
     width: number,
@@ -78,16 +99,80 @@ export class LightingOverlay extends Container {
     this.beamSprite = new Sprite(Texture.EMPTY);
     this.beamSprite.blendMode = 'screen';
 
+    this.warmZoneLayer = new Container();
+    this.warmZoneLayer.eventMode = 'none';
+    this.warmZoneLayer.interactiveChildren = false;
+
     this.moteLayer = new Container();
     this.moteLayer.eventMode = 'none';
     this.moteLayer.interactiveChildren = false;
 
     this.addChild(this.gradeSprite);
     this.addChild(this.beamSprite);
+    this.addChild(this.warmZoneLayer);
     this.addChild(this.moteLayer);
 
+    this.warmGlowTexture = this.buildWarmGlowTexture();
     this.initMotes();
     this.rebuildTextures();
+  }
+
+  /**
+   * Synchronizes dynamic warm light pools (e.g., clickable Brass Desk Lamp or Paper Andon Lantern)
+   * with smooth fade-in / fade-out transitions.
+   */
+  setWarmZones(zones: readonly WarmZone[]): void {
+    this.externalWarmZones = zones.map((z) => ({ ...z }));
+    const incomingIds = new Set<string>();
+
+    for (let i = 0; i < zones.length; i++) {
+      const zone = zones[i];
+      incomingIds.add(zone.id);
+      let slot = this.warmPoolSlots.get(zone.id);
+      if (!slot) {
+        const tex = this.warmGlowTexture ?? Texture.EMPTY;
+        const outerSprite = new Sprite(tex);
+        outerSprite.anchor.set(0.5);
+        outerSprite.blendMode = 'screen';
+        outerSprite.alpha = 0;
+
+        const coreSprite = new Sprite(tex);
+        coreSprite.anchor.set(0.5);
+        coreSprite.blendMode = 'screen';
+        coreSprite.alpha = 0;
+
+        this.warmZoneLayer.addChild(outerSprite, coreSprite);
+        slot = {
+          id: zone.id,
+          x: zone.x,
+          y: zone.y,
+          radius: zone.radius,
+          targetIntensity: zone.intensity,
+          currentIntensity: 0,
+          phase: i * 1.9 + 0.4,
+          outerSprite,
+          coreSprite,
+        };
+        this.warmPoolSlots.set(zone.id, slot);
+      }
+
+      slot.x = zone.x;
+      slot.y = zone.y;
+      slot.radius = Math.max(24, zone.radius);
+      slot.targetIntensity = Math.max(0, Math.min(1.5, zone.intensity));
+    }
+
+    for (const [id, slot] of this.warmPoolSlots.entries()) {
+      if (!incomingIds.has(id)) {
+        slot.targetIntensity = 0;
+      }
+    }
+
+    this.applyWarmZoneVisuals(0);
+  }
+
+  getWarmZones(): readonly WarmZone[] {
+    return this.externalWarmZones;
   }
 
   setMode(mode: LightingMode): void {
@@ -194,6 +279,74 @@ export class LightingOverlay extends Container {
       mote.gfx.position.set(mote.x, mote.y);
       mote.gfx.alpha = Math.min(1, mote.baseAlpha * alphaMult * pulse);
     }
+
+    this.applyWarmZoneVisuals(safeDt);
+  }
+
+  private applyWarmZoneVisuals(dt: number): void {
+    const propsPalette = SCENE_THEME_DEFS[this.theme].props;
+    const modeBoost =
+      this.effectiveMode === 'night'
+        ? 0.62
+        : this.effectiveMode === 'golden'
+          ? 0.34
+          : 0.18;
+
+    const toDelete: string[] = [];
+    for (const [id, slot] of this.warmPoolSlots.entries()) {
+      const rate = dt > 0 ? Math.min(1, dt * 7.5) : 0.28;
+      slot.currentIntensity += (slot.targetIntensity - slot.currentIntensity) * rate;
+
+      if (slot.targetIntensity <= 0.001 && slot.currentIntensity < 0.01) {
+        this.warmZoneLayer.removeChild(slot.outerSprite, slot.coreSprite);
+        slot.outerSprite.destroy();
+        slot.coreSprite.destroy();
+        toDelete.push(id);
+        continue;
+      }
+
+      const breathe = 1 + Math.sin(this.time * 2.4 + slot.phase) * 0.045;
+      const eff = Math.max(0, slot.currentIntensity) * modeBoost;
+
+      slot.outerSprite.position.set(slot.x, slot.y);
+      slot.outerSprite.width = slot.radius * 2.5 * breathe;
+      slot.outerSprite.height = slot.radius * 2.5 * breathe;
+      slot.outerSprite.tint = propsPalette.warmGlowColor;
+      slot.outerSprite.alpha = Math.min(0.85, eff * 0.78);
+
+      slot.coreSprite.position.set(slot.x, slot.y);
+      slot.coreSprite.width = slot.radius * 1.15 * breathe;
+      slot.coreSprite.height = slot.radius * 1.15 * breathe;
+      slot.coreSprite.tint = propsPalette.warmCoreColor;
+      slot.coreSprite.alpha = Math.min(0.75, eff * 0.62);
+    }
+
+    for (const id of toDelete) {
+      this.warmPoolSlots.delete(id);
+    }
+  }
+
+  private buildWarmGlowTexture(): Texture | null {
+    if (typeof document === 'undefined') {
+      return null;
+    }
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      return null;
+    }
+    const half = size * 0.5;
+    const grad = ctx.createRadialGradient(half, half, 2, half, half, half);
+    grad.addColorStop(0, 'rgba(255, 255, 255, 0.92)');
+    grad.addColorStop(0.32, 'rgba(255, 250, 240, 0.52)');
+    grad.addColorStop(0.68, 'rgba(255, 242, 220, 0.16)');
+    grad.addColorStop(1, 'rgba(255, 240, 210, 0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+    return Texture.from(canvas, true);
   }
 
   private initMotes(): void {
@@ -236,6 +389,9 @@ export class LightingOverlay extends Container {
   }
 
   private rebuildTextures(): void {
+    if (typeof document === 'undefined') {
+      return;
+    }
     const w = this.viewWidth;
     const h = this.viewHeight;
 
@@ -702,6 +858,11 @@ export class LightingOverlay extends Container {
       this.beamTexture.destroy(true);
       this.beamTexture = null;
     }
+    if (this.warmGlowTexture && this.warmGlowTexture !== Texture.EMPTY) {
+      this.warmGlowTexture.destroy(true);
+      this.warmGlowTexture = null;
+    }
+    this.warmPoolSlots.clear();
     super.destroy({ children: true });
   }
 }

@@ -16,6 +16,7 @@ public sealed class SystemTrayContext : ApplicationContext
     private readonly SysListViewReader _iconReader;
     private readonly WebViewHost _host;
     private readonly RawInputHook _rawInputHook;
+    private readonly DesktopClickDetector _desktopClickDetector = new();
     private readonly DesktopWatcher _desktopWatcher;
     private readonly OcclusionMonitor _occlusionMonitor;
     private readonly System.Windows.Forms.Timer _iconPollTimer;
@@ -26,22 +27,21 @@ public sealed class SystemTrayContext : ApplicationContext
 
     private readonly ToolStripMenuItem _laserMenuItem;
     private readonly ToolStripMenuItem _pauseMenuItem;
-    private readonly ToolStripMenuItem _hudMenuItem;
-    private readonly ToolStripMenuItem _toyDockMenuItem;
-    private readonly ToolStripMenuItem _debugMenuItem;
+    private readonly ToolStripMenuItem _controlsOverlayMenuItem;
     private readonly ToolStripMenuItem _windowedMenuItem;
-    private readonly ToolStripMenuItem _sceneMenuItem;
     private readonly ToolStripMenuItem _sceneStudyItem;
     private readonly ToolStripMenuItem _sceneTatamiItem;
     private readonly ToolStripMenuItem _sceneGardenItem;
     private readonly ToolStripMenuItem _sceneCafeItem;
-    private readonly ToolStripMenuItem _lightingMenuItem;
     private readonly ToolStripMenuItem _lightingAutoItem;
     private readonly ToolStripMenuItem _lightingDayItem;
     private readonly ToolStripMenuItem _lightingGoldenItem;
     private readonly ToolStripMenuItem _lightingNightItem;
+    private readonly Dictionary<string, ToolStripMenuItem> _breedMenuItems = new(StringComparer.OrdinalIgnoreCase);
 
     private NekoSettings _settings;
+    private bool _hasExplicitShowHud;
+    private bool _hasExplicitShowToyDock;
     private IReadOnlyList<DesktopIconRect> _latestIcons = Array.Empty<DesktopIconRect>();
     private double _latestDpiScale = 1.0;
     private bool _userPaused;
@@ -63,9 +63,20 @@ public sealed class SystemTrayContext : ApplicationContext
 
         _settingsStore = new AppSettingsStore();
         _settings = _settingsStore.Current.Clone();
-        if (!_settingsStore.HasExplicitUserSetting("showToyDock"))
+        _hasExplicitShowHud = _settingsStore.HasExplicitUserSetting("showHud");
+        _hasExplicitShowToyDock = _settingsStore.HasExplicitUserSetting("showToyDock");
+
+        // Keep both windowed and wallpaper views calm & uncluttered by default:
+        // HUD stays off unless explicitly enabled, and the on-canvas Controls Overlay
+        // defaults to off on desktop wallpaper (where the tray flyout lives) and on
+        // in windowed mode for clean single-FAB access.
+        if (!_hasExplicitShowHud)
         {
-            _settings.ShowToyDock = false;
+            _settings.ShowHud = false;
+        }
+        if (!_hasExplicitShowToyDock)
+        {
+            _settings.ShowToyDock = options.Windowed;
         }
 
         _ipc = new IpcChannel();
@@ -84,21 +95,14 @@ public sealed class SystemTrayContext : ApplicationContext
             () => _host.IsHandleCreated ? _host.Handle : IntPtr.Zero);
 
         _trayIcon = CreateCatSilhouetteIcon();
-        _laserMenuItem = new ToolStripMenuItem("Toggle Laser Mode", null, (_, _) => OnToggleLaser());
-        _pauseMenuItem = new ToolStripMenuItem("Pause Wallpaper", null, async (_, _) => await OnTogglePauseAsync());
-        _hudMenuItem = new ToolStripMenuItem("Toggle HUD", null, (_, _) => OnToggleHud())
-        {
-            Checked = _settings.ShowHud
-        };
-        _toyDockMenuItem = new ToolStripMenuItem("Show On-Wallpaper Web Dock", null, (_, _) => OnToggleToyDock())
+
+        _laserMenuItem = new ToolStripMenuItem("Laser Pointer", null, (_, _) => OnToggleLaser());
+        _pauseMenuItem = new ToolStripMenuItem("Pause", null, async (_, _) => await OnTogglePauseAsync());
+        _controlsOverlayMenuItem = new ToolStripMenuItem("Controls Overlay", null, (_, _) => OnToggleToyDock())
         {
             Checked = _settings.ShowToyDock
         };
-        _debugMenuItem = new ToolStripMenuItem("Toggle Debug Wireframes", null, (_, _) => OnToggleDebug())
-        {
-            Checked = _settings.DebugMode
-        };
-        _windowedMenuItem = new ToolStripMenuItem("Windowed Preview Mode", null, (_, _) => OnToggleWindowed())
+        _windowedMenuItem = new ToolStripMenuItem("Windowed Mode", null, (_, _) => OnToggleWindowed())
         {
             Checked = options.Windowed
         };
@@ -106,8 +110,8 @@ public sealed class SystemTrayContext : ApplicationContext
         _sceneStudyItem = new ToolStripMenuItem("Golden Study", null, (_, _) => OnSetSceneTheme("study"));
         _sceneTatamiItem = new ToolStripMenuItem("Kyoto Tatami", null, (_, _) => OnSetSceneTheme("tatami"));
         _sceneGardenItem = new ToolStripMenuItem("Sunlit Courtyard", null, (_, _) => OnSetSceneTheme("garden"));
-        _sceneCafeItem = new ToolStripMenuItem("Cat Cafe Tile", null, (_, _) => OnSetSceneTheme("cafe"));
-        _sceneMenuItem = new ToolStripMenuItem("Scene", null,
+        _sceneCafeItem = new ToolStripMenuItem("Cat Cafe", null, (_, _) => OnSetSceneTheme("cafe"));
+        var sceneMenuItem = new ToolStripMenuItem("Scene", null,
         [
             _sceneStudyItem,
             _sceneTatamiItem,
@@ -120,7 +124,7 @@ public sealed class SystemTrayContext : ApplicationContext
         _lightingDayItem = new ToolStripMenuItem("Day", null, (_, _) => OnSetLightingMode("day"));
         _lightingGoldenItem = new ToolStripMenuItem("Golden", null, (_, _) => OnSetLightingMode("golden"));
         _lightingNightItem = new ToolStripMenuItem("Night", null, (_, _) => OnSetLightingMode("night"));
-        _lightingMenuItem = new ToolStripMenuItem("Lighting", null,
+        var lightingMenuItem = new ToolStripMenuItem("Lighting", null,
         [
             _lightingAutoItem,
             _lightingDayItem,
@@ -129,18 +133,42 @@ public sealed class SystemTrayContext : ApplicationContext
         ]);
         UpdateLightingMenuChecks();
 
-        var contextMenu = new ContextMenuStrip();
+        var breedItems = new List<ToolStripItem>();
+        foreach (BreedModeOption opt in NekoSettings.BreedModeOptions)
+        {
+            string breedKey = opt.Key;
+            var item = new ToolStripMenuItem(opt.Label, null, (_, _) => OnSetBreedMode(breedKey));
+            _breedMenuItems[breedKey] = item;
+            breedItems.Add(item);
+        }
+        var breedsMenuItem = new ToolStripMenuItem("Breeds", null, breedItems.ToArray());
+        UpdateBreedMenuChecks();
+
+        var quickPlayMenuItem = new ToolStripMenuItem("Quick Play", null,
+        [
+            _laserMenuItem,
+            new ToolStripMenuItem("Toss Yarn", null, (_, _) => OnTossYarn()),
+            new ToolStripMenuItem("Scene Box", null, (_, _) => OnToggleBox()),
+            new ToolStripMenuItem("Drop Treat", null, (_, _) => OnDropTreat()),
+        ]);
+
+        var contextMenu = new ContextMenuStrip
+        {
+            Renderer = new ModernMenuRenderer(),
+            Font = new Font("Segoe UI", 9f, FontStyle.Regular, GraphicsUnit.Point),
+        };
+        contextMenu.Items.Add("Quick Controls", null, (_, _) => ToggleFlyout());
         contextMenu.Items.Add("Settings\u2026", null, (_, _) => OpenSettingsDialog());
-        contextMenu.Items.Add(_laserMenuItem);
-        contextMenu.Items.Add("Rescan Desktop Icons", null, (_, _) => RescanIcons(forceSend: true, sendSpawnAction: true));
+        contextMenu.Items.Add(new ToolStripSeparator());
+        contextMenu.Items.Add(sceneMenuItem);
+        contextMenu.Items.Add(lightingMenuItem);
+        contextMenu.Items.Add(breedsMenuItem);
+        contextMenu.Items.Add(quickPlayMenuItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(_pauseMenuItem);
-        contextMenu.Items.Add(_hudMenuItem);
-        contextMenu.Items.Add(_toyDockMenuItem);
-        contextMenu.Items.Add(_debugMenuItem);
-        contextMenu.Items.Add(_sceneMenuItem);
-        contextMenu.Items.Add(_lightingMenuItem);
         contextMenu.Items.Add(_windowedMenuItem);
+        contextMenu.Items.Add(_controlsOverlayMenuItem);
+        contextMenu.Items.Add("Refresh Icons", null, (_, _) => RescanIcons(forceSend: true, sendSpawnAction: true));
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Exit", null, (_, _) => ExitApplication());
 
@@ -189,6 +217,8 @@ public sealed class SystemTrayContext : ApplicationContext
             _ = SchedulePostDropIconRescansAsync();
         };
 
+        _ipc.SettingsChangedReceived += OnRendererSettingsChanged;
+
         _ipc.StatsUpdated += stats =>
         {
             _latestActiveCats = stats.ActiveCats + stats.NappingCats;
@@ -218,13 +248,55 @@ public sealed class SystemTrayContext : ApplicationContext
 
             if (msg.Buttons.Left && !_wasLeftDown)
             {
-                _isDesktopLeftSession = IsCursorOnDesktopWindow();
+                bool onDesktop = IsCursorOnDesktopWindow();
+                _isDesktopLeftSession = onDesktop;
+
+                if (!_host.IsWindowedMode && !_host.IsPaused)
+                {
+                    (double vpW, double vpH) = _host.GetLogicalViewportSize();
+                    _desktopClickDetector.OnLeftButtonDown(
+                        msg.X,
+                        msg.Y,
+                        Environment.TickCount64,
+                        onDesktop,
+                        _latestIcons,
+                        vpW,
+                        vpH);
+                }
+                else
+                {
+                    _desktopClickDetector.Reset();
+                }
             }
             else if (!msg.Buttons.Left && _wasLeftDown)
             {
-                bool endedDesktopDrag = _isDesktopLeftSession;
+                bool endedDesktopSession = _isDesktopLeftSession;
                 _isDesktopLeftSession = false;
-                if (endedDesktopDrag)
+
+                if (!_host.IsWindowedMode && !_host.IsPaused)
+                {
+                    bool onDesktopNow = IsCursorOnDesktopWindow();
+                    (double vpW, double vpH) = _host.GetLogicalViewportSize();
+                    PointerClickMessage? clickMsg = _desktopClickDetector.OnLeftButtonUp(
+                        msg.X,
+                        msg.Y,
+                        Environment.TickCount64,
+                        onDesktopNow,
+                        _latestIcons,
+                        vpW,
+                        vpH);
+
+                    if (clickMsg is not null)
+                    {
+                        _ipc.Send(clickMsg);
+                    }
+                }
+                else
+                {
+                    _desktopClickDetector.Reset();
+                }
+
+                if (endedDesktopSession && !_host.IsWindowedMode)
                 {
                     _ = SchedulePostDropIconRescansAsync();
                 }
@@ -251,7 +323,7 @@ public sealed class SystemTrayContext : ApplicationContext
 
         _desktopWatcher.NewFileDetected += fileName =>
         {
-            if (!_settings.EnableShellReactions || _disposed)
+            if (!_settings.EnableShellReactions || _disposed || _host.IsWindowedMode)
             {
                 return;
             }
@@ -266,7 +338,7 @@ public sealed class SystemTrayContext : ApplicationContext
 
         _desktopWatcher.RecycleBinChanged += (itemCount, emptied) =>
         {
-            if (!_settings.EnableShellReactions || _disposed)
+            if (!_settings.EnableShellReactions || _disposed || _host.IsWindowedMode)
             {
                 return;
             }
@@ -290,7 +362,9 @@ public sealed class SystemTrayContext : ApplicationContext
 
             InvokeOnUi(async () =>
             {
-                if (!_disposed)
+                // Desktop occlusion applies only to wallpaper mode; in windowed preview mode,
+                // another maximized app sitting behind NekoScape must not pause the preview.
+                if (!_disposed && !_host.IsWindowedMode)
                 {
                     await _host.SetOccludedAsync(occluded);
                 }
@@ -315,6 +389,27 @@ public sealed class SystemTrayContext : ApplicationContext
         AppDomain.CurrentDomain.ProcessExit += OnApplicationOrProcessExit;
     }
 
+    private void OnRendererSettingsChanged(SettingsChangedMessage msg)
+    {
+        if (_disposed || msg.Settings is null)
+        {
+            return;
+        }
+
+        if (msg.Settings.ShowHud.HasValue)
+        {
+            _hasExplicitShowHud = true;
+        }
+        if (msg.Settings.ShowToyDock.HasValue)
+        {
+            _hasExplicitShowToyDock = true;
+        }
+
+        NekoSettings merged = msg.Settings.ApplyTo(_settings);
+        _settings = SaveCurrentSettings(merged);
+        SyncHostUiFromSettings();
+    }
+
     private void OnSystemDisplaySettingsChanged(object? sender, EventArgs e)
     {
         InvokeOnUi(HandleDisplayChanged);
@@ -333,7 +428,7 @@ public sealed class SystemTrayContext : ApplicationContext
 
     private void OnIconPollTick()
     {
-        if (_disposed || _host.IsPaused)
+        if (_disposed || _host.IsPaused || _host.IsWindowedMode)
         {
             return;
         }
@@ -360,13 +455,30 @@ public sealed class SystemTrayContext : ApplicationContext
             return;
         }
 
+        double dpiScale = _host.IsHandleCreated ? SysListViewReader.GetMonitorDpiScale(_host.Handle) : 1.0;
+
+        // In windowed preview mode, keep the canvas completely uncluttered without phantom
+        // desktop icon mats from behind the window, while still signaling native host connection.
+        if (_host.IsWindowedMode)
+        {
+            if (forceSend || _latestIcons.Count > 0)
+            {
+                _latestIcons = Array.Empty<DesktopIconRect>();
+                _latestDpiScale = dpiScale;
+                _ipc.Send(new IconUpdateMessage(
+                    Timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    DpiScale: dpiScale,
+                    Icons: _latestIcons));
+            }
+            return;
+        }
+
         if (!forceSend && Interlocked.CompareExchange(ref _rescanBusy, 1, 0) != 0)
         {
             return;
         }
 
         Rectangle monitorBounds = GetTargetMonitorBounds();
-        double dpiScale = _host.IsHandleCreated ? SysListViewReader.GetMonitorDpiScale(_host.Handle) : 1.0;
 
         _ = Task.Run(() =>
         {
@@ -380,7 +492,7 @@ public sealed class SystemTrayContext : ApplicationContext
 
                 InvokeOnUi(() =>
                 {
-                    if (_disposed)
+                    if (_disposed || _host.IsWindowedMode)
                     {
                         return;
                     }
@@ -416,19 +528,44 @@ public sealed class SystemTrayContext : ApplicationContext
         });
     }
 
-    private bool IsCursorOnDesktopWindow()
+    public static bool IsWindowOrDescendant(
+        IntPtr candidate,
+        IntPtr rootWindow,
+        Func<IntPtr, IntPtr> getParent,
+        int maxDepth = 12)
     {
-        if (_host.IsWindowedMode)
+        if (candidate == IntPtr.Zero || rootWindow == IntPtr.Zero)
         {
-            return true;
+            return false;
         }
 
+        IntPtr current = candidate;
+        for (int depth = 0; depth < maxDepth && current != IntPtr.Zero; depth++)
+        {
+            if (current == rootWindow)
+            {
+                return true;
+            }
+            current = getParent(current);
+        }
+
+        return false;
+    }
+
+    private bool IsCursorOnDesktopWindow()
+    {
         if (!Win32Api.GetCursorPos(out Win32Api.POINT pt))
         {
             return false;
         }
 
         IntPtr hWnd = Win32Api.WindowFromPoint(pt);
+        if (_host.IsWindowedMode)
+        {
+            return _host.IsHandleCreated
+                && IsWindowOrDescendant(hWnd, _host.Handle, Win32Api.GetParent);
+        }
+
         IntPtr current = hWnd;
         for (int depth = 0; depth < 4 && current != IntPtr.Zero; depth++)
         {
@@ -457,13 +594,13 @@ public sealed class SystemTrayContext : ApplicationContext
         try
         {
             await Task.Delay(90);
-            if (!_disposed)
+            if (!_disposed && !_host.IsWindowedMode)
             {
                 InvokeOnUi(() => RescanIcons(forceSend: false, sendSpawnAction: false));
             }
 
             await Task.Delay(150);
-            if (!_disposed)
+            if (!_disposed && !_host.IsWindowedMode)
             {
                 InvokeOnUi(() => RescanIcons(forceSend: false, sendSpawnAction: false));
             }
@@ -495,18 +632,59 @@ public sealed class SystemTrayContext : ApplicationContext
 
     private void ApplyAndSaveSettings(NekoSettings updated)
     {
-        _settings = _settingsStore.Save(updated);
-        _hudMenuItem.Checked = _settings.ShowHud;
-        _toyDockMenuItem.Checked = _settings.ShowToyDock;
-        _debugMenuItem.Checked = _settings.DebugMode;
+        if (updated.ShowHud != _settings.ShowHud)
+        {
+            _hasExplicitShowHud = true;
+        }
+        if (updated.ShowToyDock != _settings.ShowToyDock)
+        {
+            _hasExplicitShowToyDock = true;
+        }
+
+        _settings = SaveCurrentSettings(updated);
+        SyncHostUiFromSettings();
+        _ipc.Send(new SettingsUpdateMessage(_settings.Clone()));
+    }
+
+    private NekoSettings SaveCurrentSettings(NekoSettings updated)
+    {
+        HashSet<string>? omit = null;
+        if (!_hasExplicitShowHud)
+        {
+            omit ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            omit.Add("showHud");
+        }
+        if (!_hasExplicitShowToyDock)
+        {
+            omit ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            omit.Add("showToyDock");
+        }
+
+        bool desiredShowHud = updated.ShowHud;
+        bool desiredShowToyDock = updated.ShowToyDock;
+        NekoSettings saved = _settingsStore.Save(updated, applyStartupRegistry: true, omitPropertyNames: omit);
+        if (!_hasExplicitShowHud)
+        {
+            saved.ShowHud = desiredShowHud;
+        }
+        if (!_hasExplicitShowToyDock)
+        {
+            saved.ShowToyDock = desiredShowToyDock;
+        }
+        return saved;
+    }
+
+    private void SyncHostUiFromSettings()
+    {
+        _controlsOverlayMenuItem.Checked = _settings.ShowToyDock;
         UpdateSceneMenuChecks();
         UpdateLightingMenuChecks();
+        UpdateBreedMenuChecks();
         if (!_settings.EnableLaserHotkey)
         {
             _rawInputHook.SetStickyLaser(false);
             _laserMenuItem.Checked = false;
         }
-        _ipc.Send(new SettingsUpdateMessage(_settings.Clone()));
         if (_openSettingsDialog is not null && !_openSettingsDialog.IsDisposed)
         {
             _openSettingsDialog.SyncFromSettings(_settings);
@@ -544,6 +722,21 @@ public sealed class SystemTrayContext : ApplicationContext
         _lightingNightItem.Checked = mode == "night";
     }
 
+    private void OnSetBreedMode(string breedMode)
+    {
+        _settings.BreedMode = NekoSettings.NormalizeBreedMode(breedMode);
+        ApplyAndSaveSettings(_settings);
+    }
+
+    private void UpdateBreedMenuChecks()
+    {
+        string activeBreed = NekoSettings.NormalizeBreedMode(_settings.BreedMode);
+        foreach (KeyValuePair<string, ToolStripMenuItem> kvp in _breedMenuItems)
+        {
+            kvp.Value.Checked = string.Equals(kvp.Key, activeBreed, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     private void OnSetCatCount(int count)
     {
         _settings.CatCount = Math.Clamp(count, 1, 12);
@@ -574,31 +767,25 @@ public sealed class SystemTrayContext : ApplicationContext
         _ipc.Send(new SpawnActionMessage(SpawnActions.ToggleBox));
     }
 
+    private void OnDropTreat()
+    {
+        _ipc.Send(new SpawnActionMessage(SpawnActions.DropTreat));
+    }
+
     private async Task OnTogglePauseAsync()
     {
         _userPaused = !_userPaused;
-        _pauseMenuItem.Text = _userPaused ? "Resume Wallpaper" : "Pause Wallpaper";
+        _pauseMenuItem.Text = _userPaused ? "Resume" : "Pause";
         _pauseMenuItem.Checked = _userPaused;
         RefreshFlyoutState();
         await _host.SetUserPausedAsync(_userPaused);
         RefreshFlyoutState();
     }
 
-    private void OnToggleHud()
-    {
-        _settings.ShowHud = !_settings.ShowHud;
-        ApplyAndSaveSettings(_settings);
-    }
-
     private void OnToggleToyDock()
     {
+        _hasExplicitShowToyDock = true;
         _settings.ShowToyDock = !_settings.ShowToyDock;
-        ApplyAndSaveSettings(_settings);
-    }
-
-    private void OnToggleDebug()
-    {
-        _settings.DebugMode = !_settings.DebugMode;
         ApplyAndSaveSettings(_settings);
     }
 
@@ -624,14 +811,14 @@ public sealed class SystemTrayContext : ApplicationContext
         flyout.SceneSelected += OnSetSceneTheme;
         flyout.LightingSelected += OnSetLightingMode;
         flyout.CatCountChanged += OnSetCatCount;
+        flyout.BreedModeSelected += OnSetBreedMode;
         flyout.ToggleLaserRequested += OnToggleLaser;
         flyout.TossYarnRequested += OnTossYarn;
         flyout.ToggleBoxRequested += OnToggleBox;
-        flyout.RescanIconsRequested += () => RescanIcons(forceSend: true, sendSpawnAction: true);
-        flyout.ToggleWebDockRequested += OnToggleToyDock;
+        flyout.DropTreatRequested += OnDropTreat;
         flyout.TogglePauseRequested += () => _ = OnTogglePauseSafeAsync();
+        flyout.ToggleWindowedModeRequested += OnToggleWindowed;
         flyout.OpenSettingsRequested += OpenSettingsDialog;
-        flyout.SettingsMutated += ApplyAndSaveSettings;
         flyout.Deactivate += (_, _) => _lastFlyoutDeactivatedTicks = Environment.TickCount64;
         flyout.FormClosed += (_, _) =>
         {
@@ -682,13 +869,25 @@ public sealed class SystemTrayContext : ApplicationContext
         LaserActive: _rawInputHook.IsLaserActive,
         Paused: _userPaused || _host.IsPaused,
         ActiveCats: _latestActiveCats > 0 ? _latestActiveCats : _settings.CatCount,
-        Pounces: _latestPounces);
+        Pounces: _latestPounces,
+        IsWindowedMode: _host.IsWindowedMode);
 
     private void OnToggleWindowed()
     {
         bool nextWindowed = !_host.IsWindowedMode;
+        _desktopClickDetector.Reset();
         _host.SetWindowedMode(nextWindowed, GetTargetMonitorBounds());
         _windowedMenuItem.Checked = nextWindowed;
+
+        if (!_hasExplicitShowToyDock)
+        {
+            _settings.ShowToyDock = nextWindowed;
+            _controlsOverlayMenuItem.Checked = _settings.ShowToyDock;
+            _ipc.Send(new SettingsUpdateMessage(_settings.Clone()));
+        }
+
+        RescanIcons(forceSend: true, sendSpawnAction: false);
+        RefreshFlyoutState();
     }
 
     private Rectangle GetTargetMonitorBounds()
@@ -881,6 +1080,7 @@ public sealed class SystemTrayContext : ApplicationContext
             _desktopWatcher.Dispose();
             _rawInputHook.Dispose();
             _notifyIcon.Visible = false;
+            _notifyIcon.ContextMenuStrip?.Dispose();
             _notifyIcon.Dispose();
             _trayIcon.Dispose();
             _host.Dispose();

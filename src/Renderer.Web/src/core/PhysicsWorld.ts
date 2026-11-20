@@ -62,6 +62,42 @@ export class PhysicsWorld {
     return this.obstacles;
   }
 
+  getBounds(): { width: number; height: number } {
+    return { width: this.width, height: this.height };
+  }
+
+  isCircleOverlappingAabb(x: number, y: number, radius: number, aabb: AabbRect): boolean {
+    const closestX = Math.max(aabb.x, Math.min(x, aabb.x + aabb.width));
+    const closestY = Math.max(aabb.y, Math.min(y, aabb.y + aabb.height));
+    const dx = x - closestX;
+    const dy = y - closestY;
+    return dx * dx + dy * dy < radius * radius;
+  }
+
+  isCircleClearOfObstacles(
+    x: number,
+    y: number,
+    radius: number,
+    extraObstacles?: readonly AabbRect[],
+  ): boolean {
+    if (x < radius || x > this.width - radius || y < radius || y > this.height - radius) {
+      return false;
+    }
+    for (const obs of this.obstacles) {
+      if (this.isCircleOverlappingAabb(x, y, radius, obs)) {
+        return false;
+      }
+    }
+    if (extraObstacles) {
+      for (const obs of extraObstacles) {
+        if (this.isCircleOverlappingAabb(x, y, radius, obs)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
   resolveCircleAabb(
     body: CircleBody,
     aabb: AabbRect,

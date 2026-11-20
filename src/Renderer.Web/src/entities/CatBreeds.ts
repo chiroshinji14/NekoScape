@@ -1,0 +1,1759 @@
+import {
+  CAT_BREEDS,
+  CAT_BREED_LABELS,
+  normalizeBreedMode,
+  normalizeCatBreed,
+  type CatBreed,
+  type CatBreedMode,
+  type CatIdentity,
+  type CatMood,
+  type CatPersonality,
+} from '../types/simulation';
+
+export type CoatPatternKind =
+  | 'solid'
+  | 'shaded'
+  | 'colorpoint'
+  | 'tabby_mackerel'
+  | 'tabby_classic'
+  | 'tuxedo'
+  | 'calico'
+  | 'bicolor'
+  | 'hairless_solid'
+  | 'hairless_bicolor';
+
+export type CoatTextureType =
+  | 'longhair'
+  | 'sleek'
+  | 'plush_dense'
+  | 'short_plush'
+  | 'hairless'
+  | 'shorthair';
+
+export type HeadShapeKind =
+  | 'brachycephalic'
+  | 'wedge'
+  | 'round_jowls'
+  | 'cute_round'
+  | 'angular_cheekbones'
+  | 'classic';
+
+export type EarShapeKind =
+  | 'small_rounded'
+  | 'large_pointed'
+  | 'medium_rounded'
+  | 'perky_alert'
+  | 'giant_bat'
+  | 'medium_pointed';
+
+export type EyeShapeKind =
+  | 'large_round'
+  | 'slanted_almond'
+  | 'walnut'
+  | 'lemon'
+  | 'almond';
+
+export type TailStyleKind =
+  | 'plume_brush'
+  | 'whip'
+  | 'plush_blunt'
+  | 'plump_upright'
+  | 'hairless_whip'
+  | 'tapered';
+
+export interface CoatVariantPalette {
+  readonly id: string;
+  readonly name: string;
+  readonly pattern: CoatPatternKind;
+  readonly baseColor: number;
+  readonly shadowColor: number;
+  readonly highlightColor: number;
+  readonly bellyColor: number;
+  readonly muzzleColor: number;
+  readonly pawColor: number;
+  readonly pawPadColor: number;
+  readonly earOuterColor: number;
+  readonly earInnerColor: number;
+  readonly noseColor: number;
+  readonly eyeIrisColor: number;
+  readonly eyeRimColor: number;
+  readonly nightEyeGlowColor: number;
+  readonly tailBaseColor: number;
+  readonly tailTipColor: number;
+  readonly stripeColor: number;
+  readonly secondaryPatchColor: number;
+  readonly pointColor?: number;
+  readonly wrinkleColor?: number;
+  readonly whiskerColor: number;
+}
+
+export interface BreedBodyAnatomy {
+  readonly collisionRadius: number;
+  readonly headToTorsoLen: number;
+  readonly torsoToHipsLen: number;
+  readonly maxSpineBendRad: number;
+  readonly hipRadius: number;
+  readonly torsoRadius: number;
+  readonly neckRadius: number;
+  readonly loafHipRadius: number;
+  readonly loafTorsoRadius: number;
+  readonly loafNeckRadius: number;
+  readonly shadowScale: number;
+  readonly shadowOffsetScale: number;
+  readonly coatType: CoatTextureType;
+  readonly fluffIntensity: number;
+  readonly furScallopCount: number;
+  readonly furScallopDepth: number;
+  readonly hasChestMane: boolean;
+  readonly maneScale: number;
+  readonly hasCheekRuffs: boolean;
+  readonly cheekRuffScale: number;
+  readonly hasWrinkles: boolean;
+  readonly wrinkleAlpha: number;
+}
+
+export interface BreedHeadAnatomy {
+  readonly shape: HeadShapeKind;
+  readonly radiusX: number;
+  readonly radiusY: number;
+  readonly headLeadWalk: number;
+  readonly headLeadCurled: number;
+  readonly muzzleOffset: number;
+  readonly muzzleWidth: number;
+  readonly noseSize: number;
+  readonly noseOffsetX: number;
+  readonly whiskerLength: number;
+  readonly whiskerSpread: number;
+  readonly whiskerCountPerSide: number;
+}
+
+export interface BreedEarAnatomy {
+  readonly shape: EarShapeKind;
+  readonly offsetX: number;
+  readonly offsetY: number;
+  readonly length: number;
+  readonly width: number;
+  readonly baseAngle: number;
+  readonly hasEarTufts: boolean;
+  readonly tuftLength: number;
+  readonly hasCartilageDetail: boolean;
+  readonly innerScale: number;
+}
+
+export interface BreedEyeAnatomy {
+  readonly shape: EyeShapeKind;
+  readonly offsetX: number;
+  readonly offsetY: number;
+  readonly irisRadius: number;
+  readonly slantRad: number;
+  readonly pupilScale: number;
+  readonly nightGlowAlpha: number;
+  readonly doubleCatchlight: boolean;
+}
+
+export interface BreedLegAnatomy {
+  readonly pawRadius: number;
+  readonly pawAspectX: number;
+  readonly frontReach: number;
+  readonly backReach: number;
+  readonly frontSideSpan: number;
+  readonly backSideSpan: number;
+  readonly stepAmplitude: number;
+  readonly tuckedClose: boolean;
+  readonly fluffyPaws: boolean;
+  readonly visibleToes: boolean;
+}
+
+export interface BreedTailAnatomy {
+  readonly style: TailStyleKind;
+  readonly segments: number;
+  readonly segmentLength: number;
+  readonly rootOffset: number;
+  readonly rootWidth: number;
+  readonly midWidth: number;
+  readonly tipWidth: number;
+  readonly fluffTufts: number;
+  readonly damping: number;
+  readonly swayAmpMultiplier: number;
+  readonly swayFreqMultiplier: number;
+  readonly restCurveBias: number;
+}
+
+export interface BreedLocomotionProfile {
+  readonly walkSpeedMultiplier: number;
+  readonly sprintSpeedMultiplier: number;
+  readonly strideFrequencyMultiplier: number;
+  readonly hopBounceFactor: number;
+  readonly turnAgility: number;
+  readonly jumpArcMultiplier: number;
+}
+
+export interface BreedBehaviorAffinities {
+  readonly grooming: number;
+  readonly loafing: number;
+  readonly sunbathing: number;
+  readonly perching: number;
+  readonly zoomies: number;
+  readonly meerkatPeek: number;
+  readonly socialCuddle: number;
+  readonly boxAffinity: number;
+  readonly propCuriosity: number;
+}
+
+export interface CatBreedProfile {
+  readonly breed: CatBreed;
+  readonly label: string;
+  readonly shortLabel: string;
+  readonly tagline: string;
+  readonly anatomy: {
+    readonly body: BreedBodyAnatomy;
+    readonly head: BreedHeadAnatomy;
+    readonly ears: BreedEarAnatomy;
+    readonly eyes: BreedEyeAnatomy;
+    readonly legs: BreedLegAnatomy;
+    readonly tail: BreedTailAnatomy;
+  };
+  readonly locomotion: BreedLocomotionProfile;
+  readonly personalityPriors: Readonly<CatPersonality>;
+  readonly behaviorAffinities: Readonly<BreedBehaviorAffinities>;
+  readonly coatVariants: readonly CoatVariantPalette[];
+  readonly defaultNames: readonly string[];
+  readonly clickCaptions: readonly string[];
+}
+
+export const BREED_PROFILES: Readonly<Record<CatBreed, CatBreedProfile>> = {
+  persian: {
+    breed: 'persian',
+    label: CAT_BREED_LABELS.persian,
+    shortLabel: 'Persian',
+    tagline: 'Plush longhair cloud with a flat face and regal bottle-brush plume',
+    anatomy: {
+      body: {
+        collisionRadius: 19,
+        headToTorsoLen: 13.5,
+        torsoToHipsLen: 15.5,
+        maxSpineBendRad: 0.88,
+        hipRadius: 14.4,
+        torsoRadius: 15.2,
+        neckRadius: 12.6,
+        loafHipRadius: 16.4,
+        loafTorsoRadius: 17.0,
+        loafNeckRadius: 13.8,
+        shadowScale: 1.16,
+        shadowOffsetScale: 0.92,
+        coatType: 'longhair',
+        fluffIntensity: 1.0,
+        furScallopCount: 14,
+        furScallopDepth: 3.4,
+        hasChestMane: true,
+        maneScale: 1.28,
+        hasCheekRuffs: true,
+        cheekRuffScale: 1.38,
+        hasWrinkles: false,
+        wrinkleAlpha: 0,
+      },
+      head: {
+        shape: 'brachycephalic',
+        radiusX: 10.0,
+        radiusY: 13.4,
+        headLeadWalk: 12.6,
+        headLeadCurled: 6.4,
+        muzzleOffset: 0.52,
+        muzzleWidth: 5.2,
+        noseSize: 1.65,
+        noseOffsetX: 0.72,
+        whiskerLength: 10.8,
+        whiskerSpread: 0.3,
+        whiskerCountPerSide: 3,
+      },
+      ears: {
+        shape: 'small_rounded',
+        offsetX: -3.6,
+        offsetY: 10.8,
+        length: 6.8,
+        width: 6.2,
+        baseAngle: 0.92,
+        hasEarTufts: true,
+        tuftLength: 3.6,
+        hasCartilageDetail: false,
+        innerScale: 0.56,
+      },
+      eyes: {
+        shape: 'large_round',
+        offsetX: 3.6,
+        offsetY: 5.4,
+        irisRadius: 3.55,
+        slantRad: 0,
+        pupilScale: 0.94,
+        nightGlowAlpha: 0.44,
+        doubleCatchlight: true,
+      },
+      legs: {
+        pawRadius: 4.5,
+        pawAspectX: 1.05,
+        frontReach: 5.8,
+        backReach: -2.2,
+        frontSideSpan: 11.4,
+        backSideSpan: 11.0,
+        stepAmplitude: 3.9,
+        tuckedClose: false,
+        fluffyPaws: true,
+        visibleToes: false,
+      },
+      tail: {
+        style: 'plume_brush',
+        segments: 5,
+        segmentLength: 7.4,
+        rootOffset: 9.2,
+        rootWidth: 11.2,
+        midWidth: 13.4,
+        tipWidth: 9.6,
+        fluffTufts: 10,
+        damping: 0.91,
+        swayAmpMultiplier: 0.76,
+        swayFreqMultiplier: 0.82,
+        restCurveBias: 0.24,
+      },
+    },
+    locomotion: {
+      walkSpeedMultiplier: 0.76,
+      sprintSpeedMultiplier: 0.80,
+      strideFrequencyMultiplier: 0.78,
+      hopBounceFactor: 0.12,
+      turnAgility: 0.78,
+      jumpArcMultiplier: 0.92,
+    },
+    personalityPriors: {
+      curiosity: 0.42,
+      playfulness: 0.38,
+      laziness: 0.88,
+      sociability: 0.64,
+      zoomieProneness: 0.20,
+      warmthAffinity: 0.84,
+    },
+    behaviorAffinities: {
+      grooming: 0.96,
+      loafing: 0.94,
+      sunbathing: 0.90,
+      perching: 0.55,
+      zoomies: 0.20,
+      meerkatPeek: 0.28,
+      socialCuddle: 0.74,
+      boxAffinity: 0.78,
+      propCuriosity: 0.48,
+    },
+    coatVariants: [
+      {
+        id: 'persian_cream',
+        name: 'Cream Cloud',
+        pattern: 'solid',
+        baseColor: 0xf5e5cc,
+        shadowColor: 0xdec4a1,
+        highlightColor: 0xfdf6ea,
+        bellyColor: 0xfaf0e1,
+        muzzleColor: 0xfbf3e6,
+        pawColor: 0xf8eedf,
+        pawPadColor: 0xe6a5a2,
+        earOuterColor: 0xebd4b6,
+        earInnerColor: 0xefc0bc,
+        noseColor: 0xd98a82,
+        eyeIrisColor: 0xd97b29,
+        eyeRimColor: 0x5c3c24,
+        nightEyeGlowColor: 0xffb347,
+        tailBaseColor: 0xf1dec2,
+        tailTipColor: 0xfbf2e4,
+        stripeColor: 0xd8bd98,
+        secondaryPatchColor: 0xfdf5e8,
+        whiskerColor: 0xfffaf2,
+      },
+      {
+        id: 'persian_chinchilla_silver',
+        name: 'Chinchilla Silver',
+        pattern: 'shaded',
+        baseColor: 0xf1f3f6,
+        shadowColor: 0xc2cbd6,
+        highlightColor: 0xffffff,
+        bellyColor: 0xf9fafc,
+        muzzleColor: 0xfafbfd,
+        pawColor: 0xf4f6f9,
+        pawPadColor: 0x625a60,
+        earOuterColor: 0xd8dfe8,
+        earInnerColor: 0xe8b9bc,
+        noseColor: 0xc26e6c,
+        eyeIrisColor: 0x44b885,
+        eyeRimColor: 0x26292e,
+        nightEyeGlowColor: 0x68f0b4,
+        tailBaseColor: 0xe2e7ee,
+        tailTipColor: 0xaeb7c4,
+        stripeColor: 0x9aa4b2,
+        secondaryPatchColor: 0xdce2ea,
+        whiskerColor: 0xffffff,
+      },
+      {
+        id: 'persian_shaded_golden',
+        name: 'Shaded Golden',
+        pattern: 'shaded',
+        baseColor: 0xf0cfa0,
+        shadowColor: 0xc99453,
+        highlightColor: 0xfbe8c7,
+        bellyColor: 0xf9e7cb,
+        muzzleColor: 0xfae9ce,
+        pawColor: 0xf4d9b2,
+        pawPadColor: 0x704a38,
+        earOuterColor: 0xd9a86c,
+        earInnerColor: 0xebb5ae,
+        noseColor: 0xc97360,
+        eyeIrisColor: 0x7ab846,
+        eyeRimColor: 0x3b2616,
+        nightEyeGlowColor: 0xaef06c,
+        tailBaseColor: 0xe3b97e,
+        tailTipColor: 0xb67b39,
+        stripeColor: 0xb87c3a,
+        secondaryPatchColor: 0xf7dfc0,
+        whiskerColor: 0xfff6e8,
+      },
+      {
+        id: 'persian_bicolor_calico',
+        name: 'Bicolor Calico',
+        pattern: 'calico',
+        baseColor: 0xf8f2e8,
+        shadowColor: 0xe3d6c4,
+        highlightColor: 0xffffff,
+        bellyColor: 0xfcf8f2,
+        muzzleColor: 0xfbf6ee,
+        pawColor: 0xfaf5ed,
+        pawPadColor: 0xe7a29e,
+        earOuterColor: 0xd67c44,
+        earInnerColor: 0xedb8b4,
+        noseColor: 0xdf8f89,
+        eyeIrisColor: 0xd8882c,
+        eyeRimColor: 0x453024,
+        nightEyeGlowColor: 0xffbc57,
+        tailBaseColor: 0x4d392f,
+        tailTipColor: 0xdc8246,
+        stripeColor: 0x4d392f,
+        secondaryPatchColor: 0xdc8246,
+        whiskerColor: 0xfffaf3,
+      },
+    ],
+    defaultNames: [
+      'Duchess',
+      'Meringue',
+      'Chiffon',
+      'Biscuit',
+      'Peaches',
+      'Cloud',
+      'Brioche',
+      'Camellia',
+    ],
+    clickCaptions: [
+      'Fluffing a royal cheek ruff',
+      'Gave a slow, regal blink',
+      'Purring like a warm cloud',
+      'Preening that plush plume tail',
+    ],
+  },
+
+  siamese: {
+    breed: 'siamese',
+    label: CAT_BREED_LABELS.siamese,
+    shortLabel: 'Siamese',
+    tagline: 'Sleek tubular acrobat with colorpoint mask, big pointed ears, and sapphire eyes',
+    anatomy: {
+      body: {
+        collisionRadius: 15.5,
+        headToTorsoLen: 17.2,
+        torsoToHipsLen: 19.6,
+        maxSpineBendRad: 1.08,
+        hipRadius: 9.2,
+        torsoRadius: 10.0,
+        neckRadius: 7.8,
+        loafHipRadius: 11.2,
+        loafTorsoRadius: 11.8,
+        loafNeckRadius: 9.4,
+        shadowScale: 0.90,
+        shadowOffsetScale: 1.0,
+        coatType: 'sleek',
+        fluffIntensity: 0.06,
+        furScallopCount: 0,
+        furScallopDepth: 0,
+        hasChestMane: false,
+        maneScale: 0,
+        hasCheekRuffs: false,
+        cheekRuffScale: 0,
+        hasWrinkles: false,
+        wrinkleAlpha: 0,
+      },
+      head: {
+        shape: 'wedge',
+        radiusX: 11.8,
+        radiusY: 9.4,
+        headLeadWalk: 15.4,
+        headLeadCurled: 7.4,
+        muzzleOffset: 0.78,
+        muzzleWidth: 3.6,
+        noseSize: 1.9,
+        noseOffsetX: 0.98,
+        whiskerLength: 10.4,
+        whiskerSpread: 0.18,
+        whiskerCountPerSide: 3,
+      },
+      ears: {
+        shape: 'large_pointed',
+        offsetX: -3.8,
+        offsetY: 6.8,
+        length: 11.2,
+        width: 7.4,
+        baseAngle: 0.72,
+        hasEarTufts: false,
+        tuftLength: 0,
+        hasCartilageDetail: false,
+        innerScale: 0.62,
+      },
+      eyes: {
+        shape: 'slanted_almond',
+        offsetX: 4.8,
+        offsetY: 3.9,
+        irisRadius: 2.75,
+        slantRad: 0.24,
+        pupilScale: 0.86,
+        nightGlowAlpha: 0.54,
+        doubleCatchlight: true,
+      },
+      legs: {
+        pawRadius: 3.4,
+        pawAspectX: 1.24,
+        frontReach: 8.6,
+        backReach: -3.6,
+        frontSideSpan: 8.6,
+        backSideSpan: 8.2,
+        stepAmplitude: 6.0,
+        tuckedClose: false,
+        fluffyPaws: false,
+        visibleToes: false,
+      },
+      tail: {
+        style: 'whip',
+        segments: 7,
+        segmentLength: 7.2,
+        rootOffset: 7.5,
+        rootWidth: 4.8,
+        midWidth: 3.4,
+        tipWidth: 1.9,
+        fluffTufts: 0,
+        damping: 0.86,
+        swayAmpMultiplier: 1.25,
+        swayFreqMultiplier: 1.18,
+        restCurveBias: 0.18,
+      },
+    },
+    locomotion: {
+      walkSpeedMultiplier: 1.18,
+      sprintSpeedMultiplier: 1.24,
+      strideFrequencyMultiplier: 1.08,
+      hopBounceFactor: 0.24,
+      turnAgility: 1.28,
+      jumpArcMultiplier: 1.18,
+    },
+    personalityPriors: {
+      curiosity: 0.90,
+      playfulness: 0.86,
+      laziness: 0.34,
+      sociability: 0.92,
+      zoomieProneness: 0.72,
+      warmthAffinity: 0.68,
+    },
+    behaviorAffinities: {
+      grooming: 0.62,
+      loafing: 0.44,
+      sunbathing: 0.72,
+      perching: 0.88,
+      zoomies: 0.74,
+      meerkatPeek: 0.72,
+      socialCuddle: 0.92,
+      boxAffinity: 0.72,
+      propCuriosity: 0.94,
+    },
+    coatVariants: [
+      {
+        id: 'siamese_seal_point',
+        name: 'Seal Point',
+        pattern: 'colorpoint',
+        baseColor: 0xf0e1ca,
+        shadowColor: 0xd9c2a2,
+        highlightColor: 0xfaf0e2,
+        bellyColor: 0xf5ead8,
+        muzzleColor: 0x3f2c22,
+        pawColor: 0x3e2b21,
+        pawPadColor: 0x3b2922,
+        earOuterColor: 0x3d2a20,
+        earInnerColor: 0xd4a49c,
+        noseColor: 0x2c1d16,
+        eyeIrisColor: 0x2688f2,
+        eyeRimColor: 0x2a1c15,
+        nightEyeGlowColor: 0x5cc2ff,
+        tailBaseColor: 0xc2ab8e,
+        tailTipColor: 0x3a281f,
+        stripeColor: 0x6e5442,
+        secondaryPatchColor: 0x533d31,
+        pointColor: 0x3f2c22,
+        whiskerColor: 0xefe3d0,
+      },
+      {
+        id: 'siamese_chocolate_point',
+        name: 'Chocolate Point',
+        pattern: 'colorpoint',
+        baseColor: 0xf6eddd,
+        shadowColor: 0xe3d4bc,
+        highlightColor: 0xfdf8ef,
+        bellyColor: 0xfaf3e7,
+        muzzleColor: 0x6e4936,
+        pawColor: 0x6c4734,
+        pawPadColor: 0x7d5347,
+        earOuterColor: 0x694533,
+        earInnerColor: 0xe0afa8,
+        noseColor: 0x573728,
+        eyeIrisColor: 0x3b9eff,
+        eyeRimColor: 0x452b1f,
+        nightEyeGlowColor: 0x74cbff,
+        tailBaseColor: 0xd8c5ad,
+        tailTipColor: 0x674331,
+        stripeColor: 0x8f6b56,
+        secondaryPatchColor: 0x7a5440,
+        pointColor: 0x6e4936,
+        whiskerColor: 0xf7eee0,
+      },
+      {
+        id: 'siamese_blue_point',
+        name: 'Blue Point',
+        pattern: 'colorpoint',
+        baseColor: 0xedeff2,
+        shadowColor: 0xd2d8e0,
+        highlightColor: 0xf8f9fb,
+        bellyColor: 0xf3f5f8,
+        muzzleColor: 0x5b6c82,
+        pawColor: 0x596a80,
+        pawPadColor: 0x5d6775,
+        earOuterColor: 0x56677d,
+        earInnerColor: 0xd8b1b5,
+        noseColor: 0x435163,
+        eyeIrisColor: 0x3c98e8,
+        eyeRimColor: 0x323d4c,
+        nightEyeGlowColor: 0x6cc8ff,
+        tailBaseColor: 0xc2cbd6,
+        tailTipColor: 0x53647a,
+        stripeColor: 0x7d8da1,
+        secondaryPatchColor: 0x6a7c92,
+        pointColor: 0x5b6c82,
+        whiskerColor: 0xf5f7fa,
+      },
+      {
+        id: 'siamese_lilac_point',
+        name: 'Lilac Point',
+        pattern: 'colorpoint',
+        baseColor: 0xf5eff1,
+        shadowColor: 0xdfd4d8,
+        highlightColor: 0xfcf9fa,
+        bellyColor: 0xf8f3f5,
+        muzzleColor: 0x95838e,
+        pawColor: 0x917f8a,
+        pawPadColor: 0xb88f99,
+        earOuterColor: 0x8e7c87,
+        earInnerColor: 0xe6bcc0,
+        noseColor: 0x7a6873,
+        eyeIrisColor: 0x4c98f5,
+        eyeRimColor: 0x594b54,
+        nightEyeGlowColor: 0x80c5ff,
+        tailBaseColor: 0xd4c8cd,
+        tailTipColor: 0x8c7a85,
+        stripeColor: 0xb0a0aa,
+        secondaryPatchColor: 0x9e8c97,
+        pointColor: 0x95838e,
+        whiskerColor: 0xfaf5f7,
+      },
+    ],
+    defaultNames: ['Suki', 'Khao', 'Mekong', 'Saffron', 'Indigo', 'Cleo', 'Lanna', 'Boba'],
+    clickCaptions: [
+      'Chirped a chatty greeting',
+      'Swished a sleek whip tail',
+      'Locked bright sapphire eyes on you',
+      'Trotted over for attention',
+    ],
+  },
+
+  british_shorthair: {
+    breed: 'british_shorthair',
+    label: CAT_BREED_LABELS.british_shorthair,
+    shortLabel: 'British Shorthair',
+    tagline: 'Cobby broad-shouldered plush teddy with Cheshire jowls and deep copper eyes',
+    anatomy: {
+      body: {
+        collisionRadius: 18.5,
+        headToTorsoLen: 14.0,
+        torsoToHipsLen: 15.8,
+        maxSpineBendRad: 0.90,
+        hipRadius: 13.4,
+        torsoRadius: 14.4,
+        neckRadius: 11.8,
+        loafHipRadius: 15.4,
+        loafTorsoRadius: 16.0,
+        loafNeckRadius: 13.0,
+        shadowScale: 1.12,
+        shadowOffsetScale: 0.96,
+        coatType: 'plush_dense',
+        fluffIntensity: 0.42,
+        furScallopCount: 0,
+        furScallopDepth: 0,
+        hasChestMane: false,
+        maneScale: 0,
+        hasCheekRuffs: true,
+        cheekRuffScale: 1.48,
+        hasWrinkles: false,
+        wrinkleAlpha: 0,
+      },
+      head: {
+        shape: 'round_jowls',
+        radiusX: 11.2,
+        radiusY: 13.6,
+        headLeadWalk: 13.0,
+        headLeadCurled: 6.6,
+        muzzleOffset: 0.68,
+        muzzleWidth: 5.6,
+        noseSize: 2.0,
+        noseOffsetX: 0.86,
+        whiskerLength: 9.8,
+        whiskerSpread: 0.24,
+        whiskerCountPerSide: 3,
+      },
+      ears: {
+        shape: 'medium_rounded',
+        offsetX: -3.8,
+        offsetY: 10.6,
+        length: 7.6,
+        width: 6.8,
+        baseAngle: 0.84,
+        hasEarTufts: false,
+        tuftLength: 0,
+        hasCartilageDetail: false,
+        innerScale: 0.56,
+      },
+      eyes: {
+        shape: 'large_round',
+        offsetX: 4.4,
+        offsetY: 5.2,
+        irisRadius: 3.35,
+        slantRad: 0,
+        pupilScale: 0.92,
+        nightGlowAlpha: 0.46,
+        doubleCatchlight: true,
+      },
+      legs: {
+        pawRadius: 4.7,
+        pawAspectX: 1.02,
+        frontReach: 6.2,
+        backReach: -2.4,
+        frontSideSpan: 11.6,
+        backSideSpan: 11.2,
+        stepAmplitude: 4.3,
+        tuckedClose: false,
+        fluffyPaws: false,
+        visibleToes: false,
+      },
+      tail: {
+        style: 'plush_blunt',
+        segments: 5,
+        segmentLength: 6.8,
+        rootOffset: 8.8,
+        rootWidth: 9.6,
+        midWidth: 8.6,
+        tipWidth: 7.2,
+        fluffTufts: 0,
+        damping: 0.91,
+        swayAmpMultiplier: 0.82,
+        swayFreqMultiplier: 0.86,
+        restCurveBias: 0.22,
+      },
+    },
+    locomotion: {
+      walkSpeedMultiplier: 0.84,
+      sprintSpeedMultiplier: 0.88,
+      strideFrequencyMultiplier: 0.85,
+      hopBounceFactor: 0.14,
+      turnAgility: 0.84,
+      jumpArcMultiplier: 0.94,
+    },
+    personalityPriors: {
+      curiosity: 0.56,
+      playfulness: 0.48,
+      laziness: 0.84,
+      sociability: 0.62,
+      zoomieProneness: 0.28,
+      warmthAffinity: 0.64,
+    },
+    behaviorAffinities: {
+      grooming: 0.76,
+      loafing: 0.96,
+      sunbathing: 0.72,
+      perching: 0.90,
+      zoomies: 0.28,
+      meerkatPeek: 0.36,
+      socialCuddle: 0.66,
+      boxAffinity: 0.88,
+      propCuriosity: 0.62,
+    },
+    coatVariants: [
+      {
+        id: 'bsh_british_blue',
+        name: 'British Blue',
+        pattern: 'solid',
+        baseColor: 0x6b798c,
+        shadowColor: 0x525e6f,
+        highlightColor: 0x95a5b8,
+        bellyColor: 0x8493a6,
+        muzzleColor: 0x8897aa,
+        pawColor: 0x616f82,
+        pawPadColor: 0x4c5461,
+        earOuterColor: 0x627082,
+        earInnerColor: 0xcfa4ab,
+        noseColor: 0x46505c,
+        eyeIrisColor: 0xd97524,
+        eyeRimColor: 0x2c3440,
+        nightEyeGlowColor: 0xffae4a,
+        tailBaseColor: 0x677588,
+        tailTipColor: 0x566374,
+        stripeColor: 0x556273,
+        secondaryPatchColor: 0x9baac0,
+        whiskerColor: 0xdbe2eb,
+      },
+      {
+        id: 'bsh_lilac',
+        name: 'Plush Lilac',
+        pattern: 'solid',
+        baseColor: 0x9e94a4,
+        shadowColor: 0x827788,
+        highlightColor: 0xc2b8c7,
+        bellyColor: 0xb4aab9,
+        muzzleColor: 0xb9afbe,
+        pawColor: 0x928898,
+        pawPadColor: 0x9c8290,
+        earOuterColor: 0x948a9a,
+        earInnerColor: 0xdfb7be,
+        noseColor: 0x7c6a78,
+        eyeIrisColor: 0xde9128,
+        eyeRimColor: 0x493f4d,
+        nightEyeGlowColor: 0xffc65c,
+        tailBaseColor: 0x998fa0,
+        tailTipColor: 0x857b8c,
+        stripeColor: 0x807586,
+        secondaryPatchColor: 0xc8bfd0,
+        whiskerColor: 0xf2ecf5,
+      },
+      {
+        id: 'bsh_silver_classic_tabby',
+        name: 'Silver Classic Tabby',
+        pattern: 'tabby_classic',
+        baseColor: 0xc0c7cf,
+        shadowColor: 0x9ea7b2,
+        highlightColor: 0xe2e7ed,
+        bellyColor: 0xdce1e8,
+        muzzleColor: 0xe3e8ee,
+        pawColor: 0xb6bec7,
+        pawPadColor: 0x3b4047,
+        earOuterColor: 0x9aa3ae,
+        earInnerColor: 0xdcb0b4,
+        noseColor: 0xb86f6a,
+        eyeIrisColor: 0x6ab358,
+        eyeRimColor: 0x24282e,
+        nightEyeGlowColor: 0x8ef278,
+        tailBaseColor: 0xb4bcc6,
+        tailTipColor: 0x343a42,
+        stripeColor: 0x333942,
+        secondaryPatchColor: 0x48505c,
+        whiskerColor: 0xf5f8fb,
+      },
+      {
+        id: 'bsh_cream',
+        name: 'Velvet Cream',
+        pattern: 'solid',
+        baseColor: 0xe8cca4,
+        shadowColor: 0xcfae82,
+        highlightColor: 0xf7e4c7,
+        bellyColor: 0xf2dcb9,
+        muzzleColor: 0xf5e2c4,
+        pawColor: 0xe2c398,
+        pawPadColor: 0xdf9f9b,
+        earOuterColor: 0xdec096,
+        earInnerColor: 0xebb9b4,
+        noseColor: 0xd48d85,
+        eyeIrisColor: 0xd46e22,
+        eyeRimColor: 0x5c3e26,
+        nightEyeGlowColor: 0xffa842,
+        tailBaseColor: 0xe3c59c,
+        tailTipColor: 0xd4b286,
+        stripeColor: 0xc9a67a,
+        secondaryPatchColor: 0xf8e7cd,
+        whiskerColor: 0xfff8ed,
+      },
+    ],
+    defaultNames: [
+      'Winston',
+      'Paddington',
+      'Crumpet',
+      'Earl',
+      'Pebble',
+      'Truffle',
+      'Bramble',
+      'Muffin',
+    ],
+    clickCaptions: [
+      'Settling into a proper plush loaf',
+      'Offered a distinguished Cheshire squint',
+      'Rumbled a deep teddy-bear purr',
+      'Puffed out those plump cheeks',
+    ],
+  },
+
+  munchkin: {
+    breed: 'munchkin',
+    label: CAT_BREED_LABELS.munchkin,
+    shortLabel: 'Munchkin',
+    tagline: 'Low-slung elongated sprite with tiny stubby legs and rapid bouncy patter',
+    anatomy: {
+      body: {
+        collisionRadius: 15.5,
+        headToTorsoLen: 15.8,
+        torsoToHipsLen: 18.8,
+        maxSpineBendRad: 0.96,
+        hipRadius: 11.6,
+        torsoRadius: 12.0,
+        neckRadius: 9.6,
+        loafHipRadius: 13.2,
+        loafTorsoRadius: 13.6,
+        loafNeckRadius: 11.0,
+        shadowScale: 0.96,
+        shadowOffsetScale: 0.58,
+        coatType: 'short_plush',
+        fluffIntensity: 0.34,
+        furScallopCount: 0,
+        furScallopDepth: 0,
+        hasChestMane: false,
+        maneScale: 0,
+        hasCheekRuffs: true,
+        cheekRuffScale: 0.72,
+        hasWrinkles: false,
+        wrinkleAlpha: 0,
+      },
+      head: {
+        shape: 'cute_round',
+        radiusX: 10.4,
+        radiusY: 11.4,
+        headLeadWalk: 14.0,
+        headLeadCurled: 6.8,
+        muzzleOffset: 0.66,
+        muzzleWidth: 4.6,
+        noseSize: 1.85,
+        noseOffsetX: 0.88,
+        whiskerLength: 9.4,
+        whiskerSpread: 0.24,
+        whiskerCountPerSide: 3,
+      },
+      ears: {
+        shape: 'perky_alert',
+        offsetX: -3.2,
+        offsetY: 8.2,
+        length: 9.2,
+        width: 6.6,
+        baseAngle: 0.64,
+        hasEarTufts: false,
+        tuftLength: 0,
+        hasCartilageDetail: false,
+        innerScale: 0.60,
+      },
+      eyes: {
+        shape: 'walnut',
+        offsetX: 4.3,
+        offsetY: 4.5,
+        irisRadius: 3.1,
+        slantRad: 0.08,
+        pupilScale: 0.94,
+        nightGlowAlpha: 0.45,
+        doubleCatchlight: true,
+      },
+      legs: {
+        pawRadius: 3.1,
+        pawAspectX: 0.95,
+        frontReach: 3.4,
+        backReach: -0.9,
+        frontSideSpan: 8.0,
+        backSideSpan: 7.8,
+        stepAmplitude: 2.8,
+        tuckedClose: true,
+        fluffyPaws: false,
+        visibleToes: false,
+      },
+      tail: {
+        style: 'plump_upright',
+        segments: 5,
+        segmentLength: 7.0,
+        rootOffset: 7.8,
+        rootWidth: 8.2,
+        midWidth: 7.2,
+        tipWidth: 5.4,
+        fluffTufts: 0,
+        damping: 0.88,
+        swayAmpMultiplier: 1.24,
+        swayFreqMultiplier: 1.32,
+        restCurveBias: 0.28,
+      },
+    },
+    locomotion: {
+      walkSpeedMultiplier: 1.06,
+      sprintSpeedMultiplier: 1.18,
+      strideFrequencyMultiplier: 1.95,
+      hopBounceFactor: 0.58,
+      turnAgility: 1.22,
+      jumpArcMultiplier: 0.96,
+    },
+    personalityPriors: {
+      curiosity: 0.88,
+      playfulness: 0.92,
+      laziness: 0.30,
+      sociability: 0.84,
+      zoomieProneness: 0.94,
+      warmthAffinity: 0.54,
+    },
+    behaviorAffinities: {
+      grooming: 0.58,
+      loafing: 0.66,
+      sunbathing: 0.56,
+      perching: 0.60,
+      zoomies: 0.96,
+      meerkatPeek: 0.98,
+      socialCuddle: 0.82,
+      boxAffinity: 0.86,
+      propCuriosity: 0.90,
+    },
+    coatVariants: [
+      {
+        id: 'munchkin_tuxedo',
+        name: 'Stubby Tuxedo',
+        pattern: 'tuxedo',
+        baseColor: 0x2b282c,
+        shadowColor: 0x1c1a1d,
+        highlightColor: 0x454048,
+        bellyColor: 0xf7f1e9,
+        muzzleColor: 0xf7f1e9,
+        pawColor: 0xf7f1e9,
+        pawPadColor: 0xe49fa3,
+        earOuterColor: 0x262327,
+        earInnerColor: 0xe8aeb0,
+        noseColor: 0xdc8f92,
+        eyeIrisColor: 0x74c450,
+        eyeRimColor: 0x171518,
+        nightEyeGlowColor: 0x9cf56c,
+        tailBaseColor: 0x2b282c,
+        tailTipColor: 0xf7f1e9,
+        stripeColor: 0x1d1b1e,
+        secondaryPatchColor: 0xf7f1e9,
+        whiskerColor: 0xffffff,
+      },
+      {
+        id: 'munchkin_ginger_bicolor',
+        name: 'Ginger Bicolor',
+        pattern: 'bicolor',
+        baseColor: 0xe58e44,
+        shadowColor: 0xc4702c,
+        highlightColor: 0xf4ae6d,
+        bellyColor: 0xfbf4ea,
+        muzzleColor: 0xfbf4ea,
+        pawColor: 0xfbf4ea,
+        pawPadColor: 0xeba8a4,
+        earOuterColor: 0xd98037,
+        earInnerColor: 0xefb6b0,
+        noseColor: 0xe08d85,
+        eyeIrisColor: 0xe2a830,
+        eyeRimColor: 0x5c3416,
+        nightEyeGlowColor: 0xffd15c,
+        tailBaseColor: 0xe2883e,
+        tailTipColor: 0xfaf2e6,
+        stripeColor: 0xb65c1f,
+        secondaryPatchColor: 0xfbf4ea,
+        whiskerColor: 0xfffaf2,
+      },
+      {
+        id: 'munchkin_calico',
+        name: 'Sprightly Calico',
+        pattern: 'calico',
+        baseColor: 0xf7efe4,
+        shadowColor: 0xe3d4c1,
+        highlightColor: 0xfef9f2,
+        bellyColor: 0xfbf5ec,
+        muzzleColor: 0xfbf5ec,
+        pawColor: 0xf9f2e8,
+        pawPadColor: 0xe9a39f,
+        earOuterColor: 0xda743c,
+        earInnerColor: 0xebb4b0,
+        noseColor: 0xdf8d88,
+        eyeIrisColor: 0x84b54c,
+        eyeRimColor: 0x3b2a1e,
+        nightEyeGlowColor: 0xb2ee6e,
+        tailBaseColor: 0x3e2d24,
+        tailTipColor: 0xda743c,
+        stripeColor: 0x3e2d24,
+        secondaryPatchColor: 0xda743c,
+        whiskerColor: 0xfffaf2,
+      },
+      {
+        id: 'munchkin_silver_tabby',
+        name: 'Silver Tabby',
+        pattern: 'tabby_mackerel',
+        baseColor: 0xc8ced5,
+        shadowColor: 0xa4adb8,
+        highlightColor: 0xe6ebf0,
+        bellyColor: 0xedf1f5,
+        muzzleColor: 0xedf1f5,
+        pawColor: 0xe4e8ed,
+        pawPadColor: 0x4b4f57,
+        earOuterColor: 0xaeb6bf,
+        earInnerColor: 0xe3b1b4,
+        noseColor: 0xc97b77,
+        eyeIrisColor: 0x58ba68,
+        eyeRimColor: 0x292d33,
+        nightEyeGlowColor: 0x80f290,
+        tailBaseColor: 0xbcc3cc,
+        tailTipColor: 0x3d434c,
+        stripeColor: 0x3d434c,
+        secondaryPatchColor: 0xe2e7ec,
+        whiskerColor: 0xf7f9fc,
+      },
+    ],
+    defaultNames: ['Mochi', 'Nugget', 'Tater', 'Sprout', 'Pippin', 'Waffles', 'Bean', 'Dumpling'],
+    clickCaptions: [
+      'Did a tiny stubby-legged hop!',
+      'Popped into an adorable meerkat peek',
+      'Pattered tiny paws excitedly',
+      'Flopped over for bouncy belly rubs',
+    ],
+  },
+
+  sphynx: {
+    breed: 'sphynx',
+    label: CAT_BREED_LABELS.sphynx,
+    shortLabel: 'Sphynx',
+    tagline: 'Hairless velvet-suede charmer with delicate skin folds, bat ears, and lemon eyes',
+    anatomy: {
+      body: {
+        collisionRadius: 15.5,
+        headToTorsoLen: 16.0,
+        torsoToHipsLen: 17.6,
+        maxSpineBendRad: 1.04,
+        hipRadius: 10.4,
+        torsoRadius: 10.8,
+        neckRadius: 7.6,
+        loafHipRadius: 12.0,
+        loafTorsoRadius: 12.4,
+        loafNeckRadius: 9.0,
+        shadowScale: 0.90,
+        shadowOffsetScale: 0.96,
+        coatType: 'hairless',
+        fluffIntensity: 0.0,
+        furScallopCount: 0,
+        furScallopDepth: 0,
+        hasChestMane: false,
+        maneScale: 0,
+        hasCheekRuffs: false,
+        cheekRuffScale: 0,
+        hasWrinkles: true,
+        wrinkleAlpha: 0.44,
+      },
+      head: {
+        shape: 'angular_cheekbones',
+        radiusX: 11.0,
+        radiusY: 9.8,
+        headLeadWalk: 14.8,
+        headLeadCurled: 7.2,
+        muzzleOffset: 0.74,
+        muzzleWidth: 4.1,
+        noseSize: 1.9,
+        noseOffsetX: 0.94,
+        whiskerLength: 2.6,
+        whiskerSpread: 0.14,
+        whiskerCountPerSide: 2,
+      },
+      ears: {
+        shape: 'giant_bat',
+        offsetX: -3.4,
+        offsetY: 7.4,
+        length: 14.2,
+        width: 9.6,
+        baseAngle: 0.94,
+        hasEarTufts: false,
+        tuftLength: 0,
+        hasCartilageDetail: true,
+        innerScale: 0.72,
+      },
+      eyes: {
+        shape: 'lemon',
+        offsetX: 4.5,
+        offsetY: 4.5,
+        irisRadius: 3.3,
+        slantRad: 0.16,
+        pupilScale: 0.90,
+        nightGlowAlpha: 0.56,
+        doubleCatchlight: true,
+      },
+      legs: {
+        pawRadius: 3.5,
+        pawAspectX: 1.28,
+        frontReach: 7.8,
+        backReach: -3.2,
+        frontSideSpan: 9.2,
+        backSideSpan: 8.8,
+        stepAmplitude: 5.4,
+        tuckedClose: false,
+        fluffyPaws: false,
+        visibleToes: true,
+      },
+      tail: {
+        style: 'hairless_whip',
+        segments: 6,
+        segmentLength: 7.0,
+        rootOffset: 7.6,
+        rootWidth: 4.4,
+        midWidth: 3.0,
+        tipWidth: 1.6,
+        fluffTufts: 0,
+        damping: 0.87,
+        swayAmpMultiplier: 1.18,
+        swayFreqMultiplier: 1.12,
+        restCurveBias: 0.34,
+      },
+    },
+    locomotion: {
+      walkSpeedMultiplier: 1.12,
+      sprintSpeedMultiplier: 1.20,
+      strideFrequencyMultiplier: 1.16,
+      hopBounceFactor: 0.28,
+      turnAgility: 1.24,
+      jumpArcMultiplier: 1.14,
+    },
+    personalityPriors: {
+      curiosity: 0.82,
+      playfulness: 0.78,
+      laziness: 0.48,
+      sociability: 0.94,
+      zoomieProneness: 0.62,
+      warmthAffinity: 0.98,
+    },
+    behaviorAffinities: {
+      grooming: 0.50,
+      loafing: 0.72,
+      sunbathing: 0.98,
+      perching: 0.76,
+      zoomies: 0.66,
+      meerkatPeek: 0.74,
+      socialCuddle: 0.96,
+      boxAffinity: 0.80,
+      propCuriosity: 0.84,
+    },
+    coatVariants: [
+      {
+        id: 'sphynx_warm_peach_pink',
+        name: 'Warm Peach-Pink',
+        pattern: 'hairless_solid',
+        baseColor: 0xe9c0b1,
+        shadowColor: 0xd19f8f,
+        highlightColor: 0xf7dcd1,
+        bellyColor: 0xf2cfc2,
+        muzzleColor: 0xedd0c4,
+        pawColor: 0xe5b8a8,
+        pawPadColor: 0xd48e87,
+        earOuterColor: 0xe0b2a2,
+        earInnerColor: 0xf4b9b5,
+        noseColor: 0xd38881,
+        eyeIrisColor: 0x9ad14b,
+        eyeRimColor: 0x7c544b,
+        nightEyeGlowColor: 0xc8ff72,
+        tailBaseColor: 0xe3b6a6,
+        tailTipColor: 0xd19f8f,
+        stripeColor: 0xc08676,
+        secondaryPatchColor: 0xf4d6ca,
+        wrinkleColor: 0xb87c6c,
+        whiskerColor: 0xf2dcd3,
+      },
+      {
+        id: 'sphynx_mink_taupe',
+        name: 'Mink Taupe',
+        pattern: 'hairless_solid',
+        baseColor: 0xb8a399,
+        shadowColor: 0x988177,
+        highlightColor: 0xd4c2b9,
+        bellyColor: 0xcab6ac,
+        muzzleColor: 0xa68e83,
+        pawColor: 0xa89288,
+        pawPadColor: 0x876c66,
+        earOuterColor: 0xa38c82,
+        earInnerColor: 0xd8a8a4,
+        noseColor: 0x7a625c,
+        eyeIrisColor: 0x4bc2b0,
+        eyeRimColor: 0x52403a,
+        nightEyeGlowColor: 0x75f5e0,
+        tailBaseColor: 0xb09a90,
+        tailTipColor: 0x947d73,
+        stripeColor: 0x846c62,
+        secondaryPatchColor: 0xc7b3a9,
+        wrinkleColor: 0x7e665d,
+        whiskerColor: 0xd9cbc4,
+      },
+      {
+        id: 'sphynx_bicolor_seal_pink',
+        name: 'Bicolor Seal-Pink',
+        pattern: 'hairless_bicolor',
+        baseColor: 0xedc9be,
+        shadowColor: 0xd5aba0,
+        highlightColor: 0xf9e2da,
+        bellyColor: 0xf4d6cc,
+        muzzleColor: 0x7d6b68,
+        pawColor: 0xe7c1b6,
+        pawPadColor: 0xb48482,
+        earOuterColor: 0x6f5f5c,
+        earInnerColor: 0xe6b4b0,
+        noseColor: 0x695755,
+        eyeIrisColor: 0xe2b346,
+        eyeRimColor: 0x4d3f3d,
+        nightEyeGlowColor: 0xffd970,
+        tailBaseColor: 0x7a6865,
+        tailTipColor: 0x665654,
+        stripeColor: 0x6f5f5c,
+        secondaryPatchColor: 0x6f5f5c,
+        wrinkleColor: 0xb5867b,
+        whiskerColor: 0xf5e2dc,
+      },
+      {
+        id: 'sphynx_blue_slate',
+        name: 'Blue-Slate Suede',
+        pattern: 'hairless_solid',
+        baseColor: 0x8c97a3,
+        shadowColor: 0x6f7a87,
+        highlightColor: 0xadb7c2,
+        bellyColor: 0xa2acb7,
+        muzzleColor: 0x7e8996,
+        pawColor: 0x838e9a,
+        pawPadColor: 0x666d78,
+        earOuterColor: 0x7c8794,
+        earInnerColor: 0xcba6ad,
+        noseColor: 0x5c6570,
+        eyeIrisColor: 0xdcc844,
+        eyeRimColor: 0x3b424a,
+        nightEyeGlowColor: 0xfff070,
+        tailBaseColor: 0x848f9c,
+        tailTipColor: 0x6c7785,
+        stripeColor: 0x5f6a78,
+        secondaryPatchColor: 0xa7b2bd,
+        wrinkleColor: 0x5b6673,
+        whiskerColor: 0xcad2db,
+      },
+    ],
+    defaultNames: ['Anubis', 'Peach', 'Yoda', 'Velvet', 'Bastet', 'Noodle', 'Dobby', 'Suede'],
+    clickCaptions: [
+      'Wiggled oversized bat ears happily',
+      'Leaned in seeking warm cuddles',
+      'Crinkled tiny velvet forehead folds',
+      'Purred like a tiny warm suede heater',
+    ],
+  },
+
+  domestic_shorthair: {
+    breed: 'domestic_shorthair',
+    label: CAT_BREED_LABELS.domestic_shorthair,
+    shortLabel: 'Domestic Shorthair',
+    tagline: 'Classic athletic everyday companion with iconic tabby, tuxedo, calico, and void coats',
+    anatomy: {
+      body: {
+        collisionRadius: 17,
+        headToTorsoLen: 15.0,
+        torsoToHipsLen: 17.0,
+        maxSpineBendRad: 0.95,
+        hipRadius: 11.4,
+        torsoRadius: 12.2,
+        neckRadius: 9.6,
+        loafHipRadius: 13.6,
+        loafTorsoRadius: 14.2,
+        loafNeckRadius: 11.4,
+        shadowScale: 1.0,
+        shadowOffsetScale: 1.0,
+        coatType: 'shorthair',
+        fluffIntensity: 0.22,
+        furScallopCount: 0,
+        furScallopDepth: 0,
+        hasChestMane: false,
+        maneScale: 0,
+        hasCheekRuffs: true,
+        cheekRuffScale: 0.56,
+        hasWrinkles: false,
+        wrinkleAlpha: 0,
+      },
+      head: {
+        shape: 'classic',
+        radiusX: 10.6,
+        radiusY: 11.6,
+        headLeadWalk: 14.0,
+        headLeadCurled: 7.0,
+        muzzleOffset: 0.68,
+        muzzleWidth: 4.5,
+        noseSize: 1.9,
+        noseOffsetX: 0.90,
+        whiskerLength: 9.6,
+        whiskerSpread: 0.26,
+        whiskerCountPerSide: 3,
+      },
+      ears: {
+        shape: 'medium_pointed',
+        offsetX: -3.5,
+        offsetY: 8.4,
+        length: 8.6,
+        width: 6.4,
+        baseAngle: 0.66,
+        hasEarTufts: false,
+        tuftLength: 0,
+        hasCartilageDetail: false,
+        innerScale: 0.58,
+      },
+      eyes: {
+        shape: 'almond',
+        offsetX: 4.3,
+        offsetY: 4.6,
+        irisRadius: 2.9,
+        slantRad: 0.1,
+        pupilScale: 0.92,
+        nightGlowAlpha: 0.46,
+        doubleCatchlight: true,
+      },
+      legs: {
+        pawRadius: 4.1,
+        pawAspectX: 1.08,
+        frontReach: 6.6,
+        backReach: -2.6,
+        frontSideSpan: 10.4,
+        backSideSpan: 10.0,
+        stepAmplitude: 4.8,
+        tuckedClose: false,
+        fluffyPaws: false,
+        visibleToes: false,
+      },
+      tail: {
+        style: 'tapered',
+        segments: 5,
+        segmentLength: 7.5,
+        rootOffset: 8.0,
+        rootWidth: 7.4,
+        midWidth: 5.6,
+        tipWidth: 3.4,
+        fluffTufts: 0,
+        damping: 0.89,
+        swayAmpMultiplier: 1.0,
+        swayFreqMultiplier: 1.0,
+        restCurveBias: 0.16,
+      },
+    },
+    locomotion: {
+      walkSpeedMultiplier: 1.0,
+      sprintSpeedMultiplier: 1.04,
+      strideFrequencyMultiplier: 1.0,
+      hopBounceFactor: 0.22,
+      turnAgility: 1.0,
+      jumpArcMultiplier: 1.05,
+    },
+    personalityPriors: {
+      curiosity: 0.72,
+      playfulness: 0.74,
+      laziness: 0.54,
+      sociability: 0.70,
+      zoomieProneness: 0.62,
+      warmthAffinity: 0.60,
+    },
+    behaviorAffinities: {
+      grooming: 0.72,
+      loafing: 0.72,
+      sunbathing: 0.68,
+      perching: 0.78,
+      zoomies: 0.66,
+      meerkatPeek: 0.62,
+      socialCuddle: 0.72,
+      boxAffinity: 0.84,
+      propCuriosity: 0.78,
+    },
+    coatVariants: [
+      {
+        id: 'dsh_mackerel_ginger_tabby',
+        name: 'Mackerel Ginger Tabby',
+        pattern: 'tabby_mackerel',
+        baseColor: 0xe08940,
+        shadowColor: 0xc26e2a,
+        highlightColor: 0xf0ad6e,
+        bellyColor: 0xf7e1c4,
+        muzzleColor: 0xf8e5cb,
+        pawColor: 0xf5ddc1,
+        pawPadColor: 0xe59f96,
+        earOuterColor: 0xd47c35,
+        earInnerColor: 0xebb1aa,
+        noseColor: 0xdc8578,
+        eyeIrisColor: 0x74bd55,
+        eyeRimColor: 0x5c3317,
+        nightEyeGlowColor: 0xa2f27a,
+        tailBaseColor: 0xdc843c,
+        tailTipColor: 0xf4d8b6,
+        stripeColor: 0x9e4816,
+        secondaryPatchColor: 0xf3caa0,
+        whiskerColor: 0xfff8ee,
+      },
+      {
+        id: 'dsh_classic_tuxedo',
+        name: 'Classic Tuxedo',
+        pattern: 'tuxedo',
+        baseColor: 0x282528,
+        shadowColor: 0x1a181b,
+        highlightColor: 0x423d44,
+        bellyColor: 0xf5efe7,
+        muzzleColor: 0xf5efe7,
+        pawColor: 0xf5efe7,
+        pawPadColor: 0xe29ca2,
+        earOuterColor: 0x242124,
+        earInnerColor: 0xe6aba9,
+        noseColor: 0xd98f91,
+        eyeIrisColor: 0x84cc4e,
+        eyeRimColor: 0x161417,
+        nightEyeGlowColor: 0xafff70,
+        tailBaseColor: 0x282528,
+        tailTipColor: 0xf5efe7,
+        stripeColor: 0x1b191c,
+        secondaryPatchColor: 0xf5efe7,
+        whiskerColor: 0xffffff,
+      },
+      {
+        id: 'dsh_calico_tortie',
+        name: 'Tri-Color Calico',
+        pattern: 'calico',
+        baseColor: 0xf6ede0,
+        shadowColor: 0xe2d3c0,
+        highlightColor: 0xfcf6ee,
+        bellyColor: 0xf9f2e8,
+        muzzleColor: 0xfaf4eb,
+        pawColor: 0xf8f0e6,
+        pawPadColor: 0xe6a19d,
+        earOuterColor: 0xcf693c,
+        earInnerColor: 0xe8ada9,
+        noseColor: 0xde8e8a,
+        eyeIrisColor: 0x5ca864,
+        eyeRimColor: 0x3b2a1e,
+        nightEyeGlowColor: 0x8cf098,
+        tailBaseColor: 0x3a2b24,
+        tailTipColor: 0xcf693c,
+        stripeColor: 0x3a2b24,
+        secondaryPatchColor: 0xcf693c,
+        whiskerColor: 0xfffaf3,
+      },
+      {
+        id: 'dsh_silver_tabby',
+        name: 'Silver Mackerel Tabby',
+        pattern: 'tabby_mackerel',
+        baseColor: 0xbec6ce,
+        shadowColor: 0x9aa4b0,
+        highlightColor: 0xe0e6ec,
+        bellyColor: 0xe7ecf2,
+        muzzleColor: 0xe9eef4,
+        pawColor: 0xdbe1e8,
+        pawPadColor: 0x454a52,
+        earOuterColor: 0xa4adb8,
+        earInnerColor: 0xe1afb4,
+        noseColor: 0xc27775,
+        eyeIrisColor: 0x4cb874,
+        eyeRimColor: 0x252a30,
+        nightEyeGlowColor: 0x76f2a2,
+        tailBaseColor: 0xb2bbc4,
+        tailTipColor: 0x39404a,
+        stripeColor: 0x39404a,
+        secondaryPatchColor: 0xdce2e9,
+        whiskerColor: 0xf5f8fb,
+      },
+      {
+        id: 'dsh_glossy_black_void',
+        name: 'Glossy Black Void',
+        pattern: 'solid',
+        baseColor: 0x201e23,
+        shadowColor: 0x151317,
+        highlightColor: 0x413c4b,
+        bellyColor: 0x29262e,
+        muzzleColor: 0x26232b,
+        pawColor: 0x1c1a20,
+        pawPadColor: 0x35313a,
+        earOuterColor: 0x1e1c21,
+        earInnerColor: 0xc99396,
+        noseColor: 0x3a353d,
+        eyeIrisColor: 0xe8b931,
+        eyeRimColor: 0x121014,
+        nightEyeGlowColor: 0xffe066,
+        tailBaseColor: 0x201e23,
+        tailTipColor: 0x2a2730,
+        stripeColor: 0x17151a,
+        secondaryPatchColor: 0x383340,
+        whiskerColor: 0xcac6d1,
+      },
+    ],
+    defaultNames: ['Marmalade', 'Oreo', 'Patches', 'Shadow', 'Milo', 'Luna', 'Olive', 'Pepper'],
+    clickCaptions: [
+      'Gave a cheerful little chirp',
+      'Leaped happily into a playful pose',
+      'Purred with happy crescent eyes',
+      'Twitched ears and leaned in for pets',
+    ],
+  },
+};
+
+function hashUint32(input: number): number {
+  let x = (input >>> 0) ^ 0x9e3779b9;
+  x = Math.imul(x ^ (x >>> 16), 0x85ebca6b) >>> 0;
+  x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35) >>> 0;
+  return (x ^ (x >>> 16)) >>> 0;
+}
+
+function unitRandom(seed: number, salt: number): number {
+  const mixed = hashUint32(seed ^ Math.imul(salt + 1, 0x27d4eb2d));
+  return mixed / 0x100000000;
+}
+
+function clamp01(v: number, min = 0.05, max = 0.98): number {
+  return v < min ? min : v > max ? max : v;
+}
+
+/**
+ * Retrieves the canonical breed anatomy, coat, locomotion, and personality profile.
+ * Defensively normalizes legacy coat names (e.g. 'orange-tabby', 'blue-grey') so it never returns undefined.
+ */
+export function getBreedProfile(breed: CatBreed | string): CatBreedProfile {
+  const normalized = normalizeCatBreed(breed);
+  return BREED_PROFILES[normalized];
+}
+
+/**
+ * Returns all authentic coat variants available for a breed.
+ */
+export function getBreedCoatVariants(breed: CatBreed | string): readonly CoatVariantPalette[] {
+  return getBreedProfile(breed).coatVariants;
+}
+
+/**
+ * Picks a cute, breed-authentic cat name that stays unique across consecutive IDs.
+ */
+export function pickBreedName(breed: CatBreed | string, id: number, seed?: number): string {
+  const profile = getBreedProfile(breed);
+  const names = profile.defaultNames;
+  const safeId = Math.max(0, Math.floor(Math.abs(id)));
+  if (seed !== undefined && Number.isFinite(seed)) {
+    const offset = hashUint32(Math.floor(seed) + safeId * 17) % names.length;
+    return names[(safeId + offset) % names.length];
+  }
+  return names[safeId % names.length];
+}
+
+/**
+ * Generates a decorrelated per-cat personality vector anchored around the breed's innate priors.
+ */
+export function generateBreedPersonality(
+  breed: CatBreed | string,
+  seed: number,
+): CatPersonality {
+  const priors = getBreedProfile(breed).personalityPriors;
+  const jitter = (salt: number, spread = 0.14): number => (unitRandom(seed, salt) * 2 - 1) * spread;
+
+  return {
+    curiosity: clamp01(priors.curiosity + jitter(11)),
+    playfulness: clamp01(priors.playfulness + jitter(23)),
+    laziness: clamp01(priors.laziness + jitter(37)),
+    sociability: clamp01(priors.sociability + jitter(53)),
+    zoomieProneness: clamp01(priors.zoomieProneness + jitter(71)),
+    warmthAffinity: clamp01(priors.warmthAffinity + jitter(89, 0.10)),
+  };
+}
+
+/**
+ * Picks a diverse breed sequence so spawning N cats in 'mix' mode showcases all 6 distinct breeds first.
+ */
+export function pickDiverseBreedOrder(
+  count: number,
+  breedMode: CatBreedMode | string = 'mix',
+  offset = 0,
+): CatBreed[] {
+  const mode = normalizeBreedMode(breedMode);
+  const safeCount = Math.max(0, Math.floor(count));
+  const result: CatBreed[] = [];
+  if (mode !== 'mix') {
+    for (let i = 0; i < safeCount; i++) {
+      result.push(mode);
+    }
+    return result;
+  }
+
+  const baseOffset = Math.max(0, Math.floor(Math.abs(offset)));
+  for (let i = 0; i < safeCount; i++) {
+    result.push(CAT_BREEDS[(i + baseOffset) % CAT_BREEDS.length]);
+  }
+  return result;
+}
+
+/**
+ * Generates a complete CatIdentity (name, breed metadata, coat variant, decorrelated personality, initial mood).
+ */
+export function generateCatIdentity(
+  id: number,
+  breed: CatBreed | string,
+  seed?: number,
+  options?: {
+    name?: string;
+    coatVariantIndex?: number;
+    mood?: CatMood;
+  },
+): CatIdentity {
+  const profile = getBreedProfile(breed);
+  const resolvedSeed =
+    seed !== undefined && Number.isFinite(seed)
+      ? Math.floor(seed)
+      : hashUint32(id * 2654435761 + profile.breed.length * 97);
+
+  const variantCount = profile.coatVariants.length;
+  const breedIndex = Math.max(0, CAT_BREEDS.indexOf(profile.breed));
+  const rawVariantIndex =
+    options?.coatVariantIndex !== undefined && Number.isFinite(options.coatVariantIndex)
+      ? Math.floor(options.coatVariantIndex)
+      : Math.max(0, Math.floor(Math.abs(id)) - 1) - breedIndex;
+  const coatVariantIndex = ((rawVariantIndex % variantCount) + variantCount) % variantCount;
+
+  const personality = generateBreedPersonality(profile.breed, resolvedSeed);
+
+  let initialMood: CatMood = options?.mood ?? 'content';
+  if (!options?.mood) {
+    if (personality.playfulness > 0.82 && personality.zoomieProneness > 0.72) {
+      initialMood = 'playful';
+    } else if (personality.curiosity > 0.82) {
+      initialMood = 'curious';
+    } else if (personality.laziness > 0.80) {
+      initialMood = 'sleepy';
+    } else if (personality.sociability > 0.86) {
+      initialMood = 'affectionate';
+    }
+  }
+
+  const customName = options?.name?.trim();
+  const name = customName && customName.length > 0 ? customName : pickBreedName(profile.breed, id);
+
+  return {
+    id,
+    name,
+    breed: profile.breed,
+    breedLabel: profile.label,
+    coatVariantIndex,
+    personality,
+    mood: initialMood,
+    activePropId: null,
+  };
+}
