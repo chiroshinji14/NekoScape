@@ -1,0 +1,13 @@
+{
+  "catCount": 6,
+  "fpsCap": 60,
+  "showHud": true,
+  "showToyDock": true,
+  "debugMode": false,
+  "enableLaserHotkey": true,
+  "enableShellReactions": true,
+  "launchAtStartup": false,
+  "idleNapMinutes": 5,
+  "lightingMode": "golden",
+  "sceneTheme": "study"
+}

@@ -1,0 +1,24 @@
+# Node / Vite / TypeScript
+node_modules/
+src/Renderer.Web/dist/
+*.tsbuildinfo
+npm-debug.log*
+
+# .NET / C# Build Artifacts
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+build/release/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*~

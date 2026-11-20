@@ -1,0 +1,143 @@
+:root {
+  /* Typography */
+  --font-display: 'Outfit', 'Segoe UI Variable', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
+
+  /* Golden-Hour Study Floor Palette (OKLCH) */
+  --floor-hardwood-base: oklch(0.5858 0.0896 57.72);
+  --floor-hardwood-deep: oklch(0.4520 0.0780 54.00);
+  --floor-rug-cream: oklch(0.9024 0.0315 79.92);
+  --floor-vignette: oklch(0.1908 0.0166 53.46 / 0.36);
+
+  /* Warm Espresso Double-Bezel Surface Tokens (OKLCH) */
+  --surface-espresso-glass: oklch(0.2252 0.0210 49.88 / 0.74);
+  --surface-espresso-solid: oklch(0.2252 0.0210 49.88);
+  --surface-espresso-elevated: oklch(0.2680 0.0240 49.88 / 0.84);
+  --bezel-outer-border: oklch(0.9373 0.0284 74.30 / 0.14);
+  --bezel-inner-highlight: oklch(0.9818 0.0152 77.07 / 0.12);
+  --bezel-shadow:
+    0 12px 32px oklch(0.1908 0.0166 53.46 / 0.42),
+    0 2px 6px oklch(0.1908 0.0166 53.46 / 0.28);
+  --bezel-backdrop: blur(18px) saturate(140%);
+
+  /* Text & Semantic Accents (OKLCH) */
+  --text-primary: oklch(0.9479 0.0182 70.24);
+  --text-secondary: oklch(0.8005 0.0308 70.64);
+  --accent-amber: oklch(0.7738 0.1190 67.23);
+  --accent-amber-soft: oklch(0.7738 0.1190 67.23 / 0.18);
+  --accent-crimson: oklch(0.6300 0.1604 26.73);
+  --accent-crimson-soft: oklch(0.6300 0.1604 26.73 / 0.18);
+  --accent-sage: oklch(0.6605 0.0751 139.95);
+
+  /* Motion & Easing */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --duration-fast: 150ms;
+  --duration-base: 220ms;
+
+  /* Geometry & Spacing */
+  --radius-pill: 9999px;
+  --radius-card: 14px;
+  --radius-sm: 8px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* Layering */
+  --z-stage: 1;
+  --z-mock-icons: 10;
+  --z-hud: 20;
+  --z-dock: 30;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  background-color: var(--surface-espresso-solid);
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+#nekoscape-app {
+  position: relative;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+#stage-root {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-stage);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#stage-root canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#mock-icons-root,
+#hud-root,
+#dock-root {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+#mock-icons-root {
+  z-index: var(--z-mock-icons);
+}
+
+#hud-root {
+  z-index: var(--z-hud);
+}
+
+#dock-root {
+  z-index: var(--z-dock);
+}
+
+.ns-double-bezel {
+  background-color: var(--surface-espresso-glass);
+  border: 1px solid var(--bezel-outer-border);
+  box-shadow:
+    inset 0 1px 0 var(--bezel-inner-highlight),
+    var(--bezel-shadow);
+  backdrop-filter: var(--bezel-backdrop);
+  -webkit-backdrop-filter: var(--bezel-backdrop);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-amber);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
