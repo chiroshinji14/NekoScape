@@ -1,4 +1,5 @@
-import { Container, Graphics } from 'pixi.js';
+import { Container, Graphics, Text } from 'pixi.js';
+import { CatBrain, getCircadianPhase } from '../core/CatBrain';
 import { DynamicFsm } from '../core/DynamicFsm';
 import { PerlinNoise } from '../core/PerlinNoise';
 import type { CircleBody, PhysicsWorld } from '../core/PhysicsWorld';
@@ -11,20 +12,29 @@ import {
   normalizeCatBreed,
   type AabbRect,
   type AmbientCritter,
+  type CatArchetype,
   type CatBreed,
   type CatClickReaction,
+  type CatCustomization,
+  type CatEarPose,
   type CatIdentity,
   type CatMood,
+  type CatNeeds,
   type CatPersonality,
+  type CatSoundEvent,
   type CatStateName,
+  type CircadianPhase,
   type DroppedTreat,
   type InteractivePropState,
   type LaserTarget,
+  type ToyEntityState,
   type Vec2,
   type WarmZone,
+  type WindowLedgesState,
 } from '../types/simulation';
 import { BOX_WALL_HEIGHT, type CardboardBox } from './CardboardBox';
 import {
+  KITTEN_BODY_SCALE,
   generateCatIdentity,
   getBreedProfile,
   type CatBreedProfile,
@@ -52,11 +62,18 @@ const POUNCE_PEAK_Z_PX = 38;
 const BOX_JUMP_BASE_PEAK_Z_PX = 62;
 const BOX_JUMP_MIN_PEAK_Z_PX = 54;
 const BOX_JUMP_MAX_PEAK_Z_PX = 72;
+const SLEEP_WAKE_STARTLE_MIN_Z_PX = 54;
+const SLEEP_WAKE_STARTLE_MAX_Z_PX = 66;
+const CUCUMBER_SCARE_PEAK_Z_PX = 78;
 
 export interface CatEntityOptions {
   seed?: number;
   name?: string;
   coatVariantIndex?: number;
+  isKitten?: boolean;
+  collarColor?: string | null;
+  hasBell?: boolean;
+  archetype?: CatArchetype;
 }
 
 export interface CatJumpArcDebug {
@@ -85,6 +102,7 @@ export interface CatContext {
   onBonk?: (cat: CatEntity) => void;
   onIconScratch?: (iconId: number, cat: CatEntity) => void;
   onIconPerchChange?: (catId: number, iconId: number | null) => void;
+  onSound?: (event: CatSoundEvent, catId: number) => void;
   occupiedIconIds?: ReadonlySet<number>;
   sceneObstacles?: readonly AabbRect[];
   interactiveProps?: readonly InteractivePropState[];
@@ -95,7 +113,20 @@ export interface CatContext {
   cursorPos?: Vec2 | null;
   onPropInteract?: (propId: string, cat: CatEntity) => void;
   onConsumeTreat?: (treatId: string, cat: CatEntity) => boolean;
+  toys?: readonly ToyEntityState[];
+  onBatToy?: (toyId: string, vx: number, vy: number, catId: number) => void;
+  onCarryToy?: (toyId: string, catId: number | null, x?: number, y?: number, rotation?: number) => void;
+  onPopBubble?: (toyId: string, catId: number) => void;
+  onConsumeToy?: (toyId: string, catId: number) => void;
+  windowLedges?: WindowLedgesState | null;
+  catCount?: number;
+  isKittenMode?: boolean;
+  collarColor?: string | null;
+  collarBell?: boolean;
+  nowDate?: Date;
 }
+
+export type CatSleepPose = 'curled' | 'belly_up_sleep' | 'sprawled';
 
 function normalizeAngle(angle: number): number {
   let a = angle;
@@ -135,9 +166,9 @@ function hashString(str: string): number {
 }
 
 /**
- * Top-down 90-degree procedural cat backed by breed-authentic anatomy & coat rendering,
- * a 3-node SpineChain, breed-sized VerletChain tail, decorrelated per-cat personality/noise,
- * and a rich 25+ state DynamicFsm behavior controller.
+ * Top-down 90-degree procedural cat backed by CatBrain (needs, circadian rhythm,
+ * archetypes, kitten mode, friendship XP/overstimulation, rare events), breed anatomy,
+ * animated Zzz sleep indicator with click-to-wake startled jump, and all 50 FSM states.
  */
 export class CatEntity extends Container {
   readonly id: number;
@@ -149,6 +180,7 @@ export class CatEntity extends Container {
   private readonly coatProfile: CatCoatProfile;
   private readonly identity: CatIdentity;
   private readonly personality: CatPersonality;
+  private readonly brain: CatBrain;
 
   private readonly body: CircleBody;
   private readonly spine: SpineChain;
@@ -159,6 +191,7 @@ export class CatEntity extends Container {
   private readonly bodyGraphics: Graphics;
   private readonly headGraphics: Graphics;
   private readonly pawOverlayGraphics: Graphics;
+  private readonly sleepText: Text;
 
   // Decorrelated per-cat PRNG + unique locomotion cadence
   private prngState: number;
@@ -179,11 +212,14 @@ export class CatEntity extends Container {
   private mood: CatMood;
   private activePropId: string | null = null;
   private clickCaptionIndex = 0;
+  private prevIdleSeconds = 0;
 
   // Elevation in world pixels (0 grounded, > 2 airborne over walls/flaps)
   private zHeight = 0;
   private pounceDuration = 0.46;
   private startleFrom: Vec2 | null = null;
+  private startlePeakZ = 0;
+  private startleJumpPeakZ = 60;
   private investigatePoint: Vec2 | null = null;
   private investigateSniffTimer = 0;
 
@@ -192,7 +228,15 @@ export class CatEntity extends Container {
   private wanderHeading = 0;
   private wanderGoal: Vec2 | null = null;
   private wanderGoalTimer = 0;
+  private wanderPauseTimer = 0;
+  private wanderPauseCooldown = 1.6;
   private napSpot: Vec2 | null = null;
+
+  // Sleep & dreaming tracking
+  private sleepPose: CatSleepPose = 'curled';
+  private dreamTwitchTimer = 0.5;
+  private dreamMewTimer = 2.2;
+  private boxSleeping = false;
 
   // Box state & high parabolic jump arc tracking
   private boxStayTimer = 0;
@@ -227,12 +271,17 @@ export class CatEntity extends Container {
   private petInBoxHold = false;
   private petOnIconHold = false;
 
-  // Rich new behavior state timers & targets
+  // Behavior state timers & targets
   private behaviorCooldown = 2.0;
   private zoomieCooldown = 14;
   private socialCooldown = 6;
   private propCooldown = 4;
+  private cucumberCooldown = 0;
+  private bellSoundCooldown = 0;
+
   private groomPhase = 0;
+  private groomStage: 0 | 1 | 2 | 3 = 0;
+  private groomFreezeTimer = 0;
   private groomSparkleTimer = 0;
   private rollPhase = 0;
   private stretchFactor = 0;
@@ -263,17 +312,59 @@ export class CatEntity extends Container {
   private treatArrived = false;
   private treatBiteTimer = 0;
 
+  // v2.0 realistic behavior fields
+  private kneadPhase = 0;
+  private slowBlinkPhase = 0;
+  private chatterTarget: Vec2 | null = null;
+  private chatterTimer = 0;
+  private voidStarePoint: Vec2 | null = null;
+  private headBuntTarget: Vec2 | null = null;
+  private headBuntArrived = false;
+  private sneezeTimer = 0;
+  private sneezeDone = false;
+  private drinkProp: InteractivePropState | null = null;
+  private drinkTarget: Vec2 | null = null;
+  private drinkArrived = false;
+  private drinkLapTimer = 0;
+  private litterProp: InteractivePropState | null = null;
+  private litterArrived = false;
+  private litterStage = 0;
+  private giftToy: ToyEntityState | null = null;
+  private giftEdgeTarget: Vec2 | null = null;
+  private giftPickedUp = false;
+  private hairballHeaves = 0;
+  private hairballTimer = 0;
+  private ignoreAwayAngle = 0;
+  private taskbarLedge: AabbRect | null = null;
+  private taskbarDir = 1;
+  private taskbarPeekTimer = 0;
+  private pawTestTarget: Vec2 | null = null;
+  private pawTestArrived = false;
+  private pawTestTaps = 0;
+  private pawTestTimer = 0;
+  private overstimulatedDir = 0;
+  private bagToy: ToyEntityState | null = null;
+  private bagProp: InteractivePropState | null = null;
+  private bagTarget: Vec2 | null = null;
+  private bagEntered = false;
+  private bagLunged = false;
+  private targetToy: ToyEntityState | null = null;
+  private toyBatCooldown = 0;
+
   private blinkTimer = 0;
   private blinkDuration = 0;
   private earTwitchLeft = 0;
   private earTwitchRight = 0;
   private earTwitchTimer = 2.2;
+  private earPose: CatEarPose = 'normal';
+  private soundAlertTimer = 0;
 
   private squashX = 1;
   private squashY = 1;
   private sleepZTimer = 0;
   private purrTimer = 0;
   private petHoldTimer = 0;
+  private staticRenderSkipCounter = 0;
 
   private lastSyncedBodyX: number;
   private lastSyncedBodyY: number;
@@ -293,7 +384,6 @@ export class CatEntity extends Container {
     this.breed = normalizeCatBreed(breed);
     this.breedProfile = getBreedProfile(this.breed);
 
-    // Strongly avalanche-hashed per-cat seed so consecutive IDs are completely decorrelated
     const baseSeed =
       options?.seed !== undefined && Number.isFinite(options.seed)
         ? Math.floor(options.seed) >>> 0
@@ -313,7 +403,17 @@ export class CatEntity extends Container {
     this.mood = this.identity.mood;
     this.coatProfile = getCoatProfile(this.breed, this.identity.coatVariantIndex);
 
-    // Decorrelated movement & timing parameters
+    this.brain = new CatBrain({
+      catId: this.id,
+      seed: this.seed,
+      breed: this.breed,
+      personality: this.personality,
+      archetype: options?.archetype,
+      isKitten: options?.isKitten ?? false,
+      collarColor: options?.collarColor ?? null,
+      hasBell: options?.hasBell ?? true,
+    });
+
     this.noise = new PerlinNoise(hashUint32(this.seed ^ 0x4f1bbcdc));
     this.noiseOffsetX = 17.3 + this.nextRand() * 880.7;
     this.noiseOffsetY = 31.7 + this.nextRand() * 911.3;
@@ -331,33 +431,33 @@ export class CatEntity extends Container {
 
     const bodySpec = this.breedProfile.anatomy.body;
     const tailSpec = this.breedProfile.anatomy.tail;
+    const kittenScale = this.brain.isKitten() ? KITTEN_BODY_SCALE : 1;
 
     this.body = {
       x,
       y,
       vx: 0,
       vy: 0,
-      radius: bodySpec.collisionRadius,
+      radius: bodySpec.collisionRadius * kittenScale,
     };
     this.lastSyncedBodyX = x;
     this.lastSyncedBodyY = y;
 
     this.spine = new SpineChain(
-      bodySpec.headToTorsoLen,
-      bodySpec.torsoToHipsLen,
+      bodySpec.headToTorsoLen * kittenScale,
+      bodySpec.torsoToHipsLen * kittenScale,
       bodySpec.maxSpineBendRad,
     );
     this.spine.reset(x, y, this.heading);
 
     this.tail = new VerletChain(
       tailSpec.segments,
-      tailSpec.segmentLength,
-      this.spine.hips.x - Math.cos(this.heading) * tailSpec.rootOffset,
-      this.spine.hips.y - Math.sin(this.heading) * tailSpec.rootOffset,
+      tailSpec.segmentLength * kittenScale,
+      this.spine.hips.x - Math.cos(this.heading) * tailSpec.rootOffset * kittenScale,
+      this.spine.hips.y - Math.sin(this.heading) * tailSpec.rootOffset * kittenScale,
       tailSpec.damping,
     );
 
-    // Stagger initial timers so no two cats act in lockstep
     this.blinkTimer = 1.0 + this.nextRand() * 3.5;
     this.earTwitchTimer = 0.9 + this.nextRand() * 3.0;
     this.iconInteractCooldown = 2.5 + this.nextRand() * 6.5;
@@ -373,19 +473,45 @@ export class CatEntity extends Container {
     this.headGraphics = new Graphics();
     this.pawOverlayGraphics = new Graphics();
 
+    this.sleepText =
+      typeof Text === 'function'
+        ? new Text({
+            text: 'Zzz',
+            style: {
+              fontFamily: 'Georgia, "Segoe UI", sans-serif',
+              fontSize: 13,
+              fontWeight: '700',
+              fill: 0xf9f1e4,
+              stroke: { color: 0x2a1a10, width: 3.2 },
+              letterSpacing: 0.6,
+            },
+          })
+        : ({
+            text: 'Zzz',
+            visible: false,
+            alpha: 1,
+            rotation: 0,
+            anchor: { set() {} },
+            position: { set() {} },
+            scale: { set() {} },
+          } as unknown as Text);
+    this.sleepText.anchor.set(0.5, 1);
+    this.sleepText.visible = false;
+
     this.addChild(this.shadowGraphics);
     this.addChild(this.bodyGraphics);
     this.addChild(this.headGraphics);
     this.addChild(this.pawOverlayGraphics);
+    if (typeof Text === 'function') {
+      this.addChild(this.sleepText);
+    }
 
     this.fsm = this.buildFsm();
-    // Stagger initial idle duration immediately upon construction
     this.stateTargetDuration = 0.45 + this.nextRand() * 2.75;
     this.renderCat();
   }
 
   private nextRand(): number {
-    // Mulberry32 deterministic per-cat PRNG
     this.prngState = (this.prngState + 0x6d2b79f5) >>> 0;
     let t = Math.imul(this.prngState ^ (this.prngState >>> 15), 1 | this.prngState);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
@@ -401,8 +527,74 @@ export class CatEntity extends Container {
   }
 
   // ============================================================================
-  // Public Identity, Inspection & Interaction APIs
+  // Public Identity, Brain, Sleep & Inspection APIs
   // ============================================================================
+
+  getBrain(): CatBrain {
+    return this.brain;
+  }
+
+  getNeeds(): CatNeeds {
+    return this.brain.getNeeds();
+  }
+
+  getArchetype(): CatArchetype {
+    return this.brain.getArchetype();
+  }
+
+  getCustomization(): CatCustomization {
+    return this.brain.getCustomization();
+  }
+
+  getFriendshipLevel(): number {
+    return this.brain.getFriendshipLevel();
+  }
+
+  getFriendshipXp(): number {
+    return this.brain.getFriendshipXp();
+  }
+
+  getCircadianPhase(date?: Date): CircadianPhase {
+    return getCircadianPhase(date ?? this.ctx?.nowDate);
+  }
+
+  isKitten(): boolean {
+    return this.brain.isKitten();
+  }
+
+  setKittenMode(enabled: boolean): void {
+    const prev = this.brain.isKitten();
+    this.brain.setKittenMode(enabled);
+    if (prev !== this.brain.isKitten()) {
+      const scale = this.brain.isKitten() ? KITTEN_BODY_SCALE : 1;
+      this.body.radius = this.breedProfile.anatomy.body.collisionRadius * scale;
+    }
+  }
+
+  setCollar(collarColor: string | null, hasBell: boolean): void {
+    this.brain.setCollar(collarColor, hasBell);
+  }
+
+  isSleeping(): boolean {
+    const s = this.fsm.state;
+    return s === 'NAP' || s === 'DEEP_SLEEP' || s === 'DREAMING';
+  }
+
+  getSleepIndicatorText(): string {
+    return this.isSleeping() ? 'Zzz' : '';
+  }
+
+  getSleepPose(): CatSleepPose {
+    return this.sleepPose;
+  }
+
+  getEarPose(): CatEarPose {
+    return this.earPose;
+  }
+
+  getRegisteredStates(): CatStateName[] {
+    return this.fsm.getRegisteredStates();
+  }
 
   getIdentity(): CatIdentity {
     return {
@@ -410,6 +602,9 @@ export class CatEntity extends Container {
       personality: { ...this.personality },
       mood: this.mood,
       activePropId: this.activePropId,
+      archetype: this.brain.getArchetype(),
+      needs: this.brain.getNeeds(),
+      customization: this.brain.getCustomization(),
     };
   }
 
@@ -458,75 +653,205 @@ export class CatEntity extends Container {
     };
   }
 
+  private emitSound(event: CatSoundEvent): void {
+    this.ctx?.onSound?.(event, this.id);
+  }
+
+  private emitBellIfWearing(): void {
+    const c = this.brain.getCustomization();
+    if (c.collarColor !== null && c.hasBell && this.bellSoundCooldown <= 0) {
+      this.bellSoundCooldown = 4.5;
+      this.emitSound('bell');
+    }
+  }
+
+  // ============================================================================
+  // User & World Interaction Triggers
+  // ============================================================================
+
   /**
-   * Handles a direct user click / double-click on this cat with delightful
-   * mood- and breed-aware reactions, particles, and structured badge feedback.
+   * Handles a direct user click / double-click on this cat.
+   * CRITICAL: Clicking a sleeping cat (NAP / DEEP_SLEEP / DREAMING) immediately wakes
+   * it STARTLED with a vertical jump arc (54-66px zHeight), puffed tail, flat ears, and ! burst!
    */
   handleClick(isDoubleClick = false): CatClickReaction {
     const state = this.fsm.state;
     const visualY = this.body.y - this.zHeight * 0.68;
     const particles = this.ctx?.particles;
     let caption: string;
+    let wokeFromSleep = false;
+    let soundEvent: CatSoundEvent | undefined;
 
     this.pendingIconPlay = null;
+
+    // 1. SLEEPING CAT -> Immediate STARTLED vertical jump wake-up!
+    if (this.isSleeping()) {
+      wokeFromSleep = true;
+      soundEvent = 'startle';
+      this.brain.recordInteraction('wake_startle');
+      this.startleFrom = this.ctx?.cursorPos
+        ? { ...this.ctx.cursorPos }
+        : {
+            x: this.body.x - Math.cos(this.heading) * 36,
+            y: this.body.y - Math.sin(this.heading) * 36,
+          };
+      this.startlePeakZ = this.randRange(SLEEP_WAKE_STARTLE_MIN_Z_PX, SLEEP_WAKE_STARTLE_MAX_Z_PX);
+      this.mood = 'startled';
+      this.earPose = 'flat_back';
+      this.fsm.transition('STARTLED', true);
+      particles?.spawnStartleBurst(this.body.x, visualY);
+      caption = 'Startled awake with a giant leap!';
+
+      return {
+        catId: this.id,
+        name: this.identity.name,
+        breed: this.breed,
+        breedLabel: this.identity.breedLabel,
+        mood: this.mood,
+        state: this.fsm.state,
+        caption,
+        x: this.body.x,
+        y: visualY,
+        friendshipLevel: this.brain.getFriendshipLevel(),
+        friendshipXp: this.brain.getFriendshipXp(),
+        wokeFromSleep,
+        soundEvent,
+      };
+    }
+
     this.squashX = 1.15;
     this.squashY = 0.86;
 
-    // 1. Cat curled in cardboard box -> pops playfully OUT with a proper jump!
+    // 2. Cat inside cardboard box -> pops cleanly OVER the rim via JUMP_OUT_BOX!
     if (state === 'IN_BOX') {
+      const napThreshold = this.ctx?.idleNapSeconds ?? IDLE_NAP_SECONDS;
+      const wasBoxSleep = this.boxSleeping || (this.ctx?.idleSeconds ?? 0) >= napThreshold;
+      this.boxSleeping = false;
+      if (wasBoxSleep) {
+        wokeFromSleep = true;
+        soundEvent = 'startle';
+        this.brain.recordInteraction('wake_startle');
+        this.jumpOutNextState = 'STARTLED';
+        this.jumpOutUrgent = true;
+        this.fsm.transition('JUMP_OUT_BOX', true);
+        particles?.spawnStartleBurst(this.body.x, visualY);
+        caption = 'Startled out of the box!';
+      } else {
+        const res = this.brain.recordInteraction('click');
+        soundEvent = res.soundEvent ?? 'chirp';
+        this.mood = 'playful';
+        this.jumpOutNextState = isDoubleClick ? 'ROLL_BELLY' : 'WANDER';
+        this.jumpOutUrgent = false;
+        this.fsm.transition('JUMP_OUT_BOX', true);
+        particles?.spawnMusicNotes(this.body.x, visualY - 10, 2);
+        particles?.spawnHeartBurst(this.body.x, visualY - 6, 2);
+        this.emitSound(soundEvent);
+        caption = 'Popped out of the box to say hi!';
+      }
+      return {
+        catId: this.id,
+        name: this.identity.name,
+        breed: this.breed,
+        breedLabel: this.identity.breedLabel,
+        mood: this.mood,
+        state: this.fsm.state,
+        caption,
+        x: this.body.x,
+        y: visualY,
+        friendshipLevel: this.brain.getFriendshipLevel(),
+        friendshipXp: this.brain.getFriendshipXp(),
+        wokeFromSleep,
+        soundEvent,
+      };
+    }
+
+    if (
+      state === 'PERCH_ICON' ||
+      state === 'JUMP_TO_BOX' ||
+      state === 'JUMP_OUT_BOX' ||
+      state === 'JUMP_TO_ICON'
+    ) {
+      const res = this.brain.recordInteraction('click');
+      soundEvent = res.soundEvent ?? 'chirp';
       this.mood = 'playful';
-      this.jumpOutNextState = isDoubleClick ? 'ROLL_BELLY' : 'WANDER';
-      this.jumpOutUrgent = false;
-      this.fsm.transition('JUMP_OUT_BOX', true);
       particles?.spawnMusicNotes(this.body.x, visualY - 10, 2);
       particles?.spawnHeartBurst(this.body.x, visualY - 6, 2);
-      caption = 'Popped out of the box to say hi!';
-    } else if (state === 'NAP' || state === 'SUNBATHE') {
-      // 2. Sleeping or sunbathing -> wakes gently into an adorable big bow-stretch!
+      this.emitSound(soundEvent);
+      caption = this.pickNextClickCaption();
+      return {
+        catId: this.id,
+        name: this.identity.name,
+        breed: this.breed,
+        breedLabel: this.identity.breedLabel,
+        mood: this.mood,
+        state: this.fsm.state,
+        caption,
+        x: this.body.x,
+        y: visualY,
+        friendshipLevel: res.friendshipLevel,
+        friendshipXp: res.friendshipXp,
+        wokeFromSleep: false,
+        soundEvent,
+      };
+    }
+
+    // 3. Friendship / Overstimulation / Ignore check
+    const interaction = this.brain.recordInteraction('click', isDoubleClick ? 1.2 : 1.0);
+    soundEvent = interaction.soundEvent;
+
+    if (interaction.overstimulated) {
+      this.mood = 'irritated';
+      this.fsm.transition('OVERSTIMULATED', true);
+      particles?.spawnChatterPuff(this.body.x, visualY - 10);
+      this.emitSound('chirp');
+      caption = 'Tail flicks — needs some personal space';
+    } else if (interaction.ignored && !isDoubleClick) {
+      this.mood = 'irritated';
+      this.fsm.transition('IGNORE_USER', true);
+      caption = 'Flicked an ear and pretended not to hear you';
+    } else if (state === 'SUNBATHE') {
       this.mood = 'content';
       this.fsm.transition('STRETCHING', true);
       particles?.spawnHeartBurst(this.body.x, visualY - 8, 2);
       particles?.spawnGroomSparkle(this.body.x, visualY - 12);
-      caption = 'Woke up for a big cozy stretch';
+      this.emitSound(soundEvent ?? 'purr');
+      caption = 'Woke from sunbathing for a cozy stretch';
     } else if (isDoubleClick) {
-      // 3. Double-click -> high-energy zoomies (for zoomy breeds) or instant belly-roll!
-      if (this.personality.zoomieProneness >= 0.58 && state !== 'ZOOMIES' && state !== 'PERCH_ICON') {
+      if (this.personality.zoomieProneness >= 0.55 && state !== 'ZOOMIES') {
         this.mood = 'zoomy';
         this.fsm.transition('ZOOMIES', true);
         particles?.spawnCatnipSparkles(this.body.x, visualY - 8, 6);
         particles?.spawnMusicNotes(this.body.x, visualY - 12, 2);
+        this.emitSound('trill');
+        soundEvent = 'trill';
         caption = 'Burst into playful zoomies!';
-      } else if (state !== 'PERCH_ICON') {
+      } else {
         this.mood = 'affectionate';
         this.fsm.transition('ROLL_BELLY', true);
         particles?.spawnHeartBurst(this.body.x, visualY - 10, 4);
         particles?.spawnMusicNotes(this.body.x, visualY - 12, 2);
+        this.emitSound(soundEvent ?? 'purr');
         caption = 'Flopped over for belly rubs!';
-      } else {
-        this.mood = 'affectionate';
-        this.petHoldTimer = 1.6;
-        this.petOnIconHold = true;
-        this.fsm.transition('PETTED', true);
-        particles?.spawnHeartBurst(this.body.x, visualY - 10, 3);
-        caption = 'Purring proudly from the perch';
       }
-    } else if (state === 'PERCH_ICON' || state === 'JUMP_TO_BOX' || state === 'JUMP_OUT_BOX' || state === 'JUMP_TO_ICON') {
-      // Airborne or perched: joyful chirp & sparkles without interrupting jump physics!
-      this.mood = 'playful';
-      particles?.spawnMusicNotes(this.body.x, visualY - 10, 2);
-      particles?.spawnHeartBurst(this.body.x, visualY - 6, 2);
-      caption = this.pickNextClickCaption();
     } else {
-      // 4. Single click on grounded cat: breed & personality-flavored reaction!
       const roll = this.nextRand();
       const aff = this.breedProfile.behaviorAffinities;
-      if (roll < 0.36 + this.personality.playfulness * 0.18 && state !== 'ROLL_BELLY') {
+      const lvl = interaction.friendshipLevel;
+      if (lvl >= 2 && roll < 0.22 + (lvl - 1) * 0.05 && state !== 'SLOW_BLINK') {
+        this.mood = 'affectionate';
+        this.fsm.transition('SLOW_BLINK', true);
+        particles?.spawnHeartBurst(this.body.x, visualY - 10, 2);
+        this.emitSound('purr');
+        soundEvent = 'purr';
+        caption = 'Slow-blinking affectionately at you';
+      } else if (roll < 0.48 + this.personality.playfulness * 0.16 && state !== 'ROLL_BELLY') {
         this.mood = 'affectionate';
         this.fsm.transition('ROLL_BELLY', true);
         particles?.spawnHeartBurst(this.body.x, visualY - 8, 3);
         particles?.spawnMusicNotes(this.body.x, visualY - 10, 2);
+        this.emitSound(soundEvent ?? 'purr');
         caption = 'Doing happy belly rolls';
-      } else if (roll < 0.58 + aff.meerkatPeek * 0.22 && state !== 'MEERKAT_PEEK') {
+      } else if (roll < 0.68 + aff.meerkatPeek * 0.18 && state !== 'MEERKAT_PEEK') {
         this.mood = 'curious';
         this.meerkatTarget = this.ctx?.cursorPos
           ? { ...this.ctx.cursorPos }
@@ -534,6 +859,8 @@ export class CatEntity extends Container {
         this.fsm.transition('MEERKAT_PEEK', true);
         particles?.spawnMusicNotes(this.body.x, visualY - 12, 2);
         particles?.spawnCuriosityPop(this.body.x, visualY - 10);
+        this.emitSound('chirp');
+        soundEvent = 'chirp';
         caption = this.breed === 'munchkin' ? 'Perked into a tiny meerkat peek!' : 'Perked up with curious ears';
       } else {
         this.mood = 'affectionate';
@@ -541,6 +868,7 @@ export class CatEntity extends Container {
         this.fsm.transition('PETTED', true);
         particles?.spawnHeartBurst(this.body.x, visualY - 8, 3);
         particles?.spawnMusicNotes(this.body.x, visualY - 10, 1);
+        this.emitSound(soundEvent ?? 'purr');
         caption = this.pickNextClickCaption();
       }
     }
@@ -555,6 +883,10 @@ export class CatEntity extends Container {
       caption,
       x: this.body.x,
       y: visualY,
+      friendshipLevel: interaction.friendshipLevel,
+      friendshipXp: interaction.friendshipXp,
+      wokeFromSleep,
+      soundEvent,
     };
   }
 
@@ -569,8 +901,56 @@ export class CatEntity extends Container {
   }
 
   /**
-   * Directs this cat to investigate and interact with a clicked/active scene prop.
+   * Reacts to loud desktop media/audio bursts by swiveling ears and glancing toward sourceX.
    */
+  triggerSoundAlert(level: number, sourceX?: number): void {
+    const safeLevel = clamp(Number.isFinite(level) ? level : 0, 0, 1);
+    if (safeLevel < 0.25) return;
+
+    this.soundAlertTimer = 1.4;
+    this.earTwitchLeft = 0.35;
+    this.earTwitchRight = 0.35;
+    this.earPose = safeLevel > 0.72 ? 'forward' : 'normal';
+
+    const lookX = sourceX ?? this.ctx?.cursorPos?.x ?? this.body.x + Math.cos(this.heading) * 90;
+    const lookY = this.body.y - 40;
+    this.headAngle = Math.atan2(lookY - this.body.y, lookX - this.body.x);
+
+    if (safeLevel >= 0.78 && !this.isBusyOrAirborne() && !this.isSleeping()) {
+      this.meerkatTarget = { x: lookX, y: lookY };
+      this.fsm.transition('MEERKAT_PEEK', true);
+    }
+  }
+
+  /**
+   * Triggers iconic cucumber panic leap (78px vertical jump!).
+   */
+  triggerCucumberScare(cucumberPos: Vec2): void {
+    const state = this.fsm.state;
+    if (
+      state === 'CUCUMBER_SCARE' ||
+      state === 'JUMP_TO_BOX' ||
+      state === 'JUMP_OUT_BOX' ||
+      state === 'JUMP_TO_ICON'
+    ) {
+      return;
+    }
+    this.startleFrom = { x: cucumberPos.x, y: cucumberPos.y };
+    this.cucumberCooldown = 14;
+    if (state === 'IN_BOX') {
+      this.jumpOutNextState = 'STARTLED';
+      this.jumpOutUrgent = true;
+      this.fsm.transition('JUMP_OUT_BOX', true);
+      return;
+    }
+    this.fsm.transition('CUCUMBER_SCARE', true);
+  }
+
+  triggerOverstimulated(): void {
+    if (this.isBusyOrAirborne()) return;
+    this.fsm.transition('OVERSTIMULATED', true);
+  }
+
   triggerPropAttract(prop: InteractivePropState, point?: Vec2): void {
     const state = this.fsm.state;
     if (state === 'JUMP_TO_BOX' || state === 'JUMP_OUT_BOX' || state === 'JUMP_TO_ICON' || state === 'BONK') {
@@ -578,6 +958,49 @@ export class CatEntity extends Container {
     }
 
     const interactPt = point ?? prop.interactPoint ?? { x: prop.x, y: prop.y };
+
+    if (prop.interactionType === 'drink') {
+      this.drinkProp = prop;
+      this.drinkTarget = this.pickDrinkPointForProp(prop);
+      this.activePropId = prop.id;
+      if (state === 'IN_BOX') {
+        this.jumpOutNextState = 'DRINKING';
+        this.jumpOutUrgent = false;
+        this.fsm.transition('JUMP_OUT_BOX');
+        return;
+      }
+      this.fsm.transition('DRINKING', true);
+      return;
+    }
+
+    if (prop.interactionType === 'litter') {
+      this.litterProp = prop;
+      this.activePropId = prop.id;
+      if (state === 'IN_BOX') {
+        this.jumpOutNextState = 'LITTER_USE';
+        this.jumpOutUrgent = false;
+        this.fsm.transition('JUMP_OUT_BOX');
+        return;
+      }
+      this.fsm.transition('LITTER_USE', true);
+      return;
+    }
+
+    if (prop.interactionType === 'ambush') {
+      this.bagProp = prop;
+      this.bagToy = null;
+      this.bagTarget = { x: interactPt.x, y: interactPt.y };
+      this.activePropId = prop.id;
+      if (state === 'IN_BOX') {
+        this.jumpOutNextState = 'PAPER_BAG_AMBUSH';
+        this.jumpOutUrgent = false;
+        this.fsm.transition('JUMP_OUT_BOX');
+        return;
+      }
+      this.fsm.transition('PAPER_BAG_AMBUSH', true);
+      return;
+    }
+
     this.targetProp = prop;
     this.targetPropPoint = { x: interactPt.x, y: interactPt.y };
     this.activePropId = prop.id;
@@ -599,9 +1022,6 @@ export class CatEntity extends Container {
     this.fsm.transition('PROP_INTERACT', true);
   }
 
-  /**
-   * Directs this cat to trot over and crunch a dropped treat!
-   */
   triggerTreatAttract(treat: DroppedTreat): void {
     const state = this.fsm.state;
     if (state === 'JUMP_TO_BOX' || state === 'JUMP_OUT_BOX' || state === 'JUMP_TO_ICON' || state === 'BONK') {
@@ -628,15 +1048,14 @@ export class CatEntity extends Container {
     this.fsm.transition('EATING_TREAT', true);
   }
 
-  /**
-   * Makes the cat perk up curiously toward a floor tap, butterfly, or sound cue.
-   */
   triggerCuriosityGlance(point: Vec2): void {
     const state = this.fsm.state;
     this.meerkatTarget = { x: point.x, y: point.y };
 
-    if (state === 'IN_BOX' || state === 'PERCH_ICON' || state === 'LOAFING') {
-      this.headAngle = Math.atan2(point.y - this.body.y, point.x - this.body.x);
+    if (state === 'IN_BOX' || state === 'PERCH_ICON' || state === 'LOAFING' || this.isSleeping()) {
+      if (!this.isSleeping()) {
+        this.headAngle = Math.atan2(point.y - this.body.y, point.x - this.body.x);
+      }
       this.earTwitchLeft = 0.28;
       this.earTwitchRight = 0.28;
       return;
@@ -650,10 +1069,24 @@ export class CatEntity extends Container {
   triggerPet(): void {
     this.petHoldTimer = 1.25;
     this.pendingIconPlay = null;
-    this.mood = 'affectionate';
     const prevState = this.fsm.state;
 
-    // Never release box early or teleport out when petted inside the box!
+    if (this.isSleeping()) {
+      // Gentle pet doesn't panic-jump (only clicking does!), just wakes gently or purrs
+      this.brain.recordInteraction('pet');
+      this.mood = 'affectionate';
+      this.fsm.transition('STRETCHING', true);
+      return;
+    }
+
+    const res = this.brain.recordInteraction('pet', 0.45);
+    if (res.overstimulated) {
+      this.mood = 'irritated';
+      this.fsm.transition('OVERSTIMULATED', true);
+      return;
+    }
+
+    this.mood = 'affectionate';
     if (prevState === 'IN_BOX') {
       this.petInBoxHold = true;
       this.fsm.transition('PETTED');
@@ -683,14 +1116,13 @@ export class CatEntity extends Container {
 
   triggerStartle(from: Vec2): void {
     this.startleFrom = { x: from.x, y: from.y };
+    this.startlePeakZ = this.randRange(54, 66);
     this.pendingIconPlay = null;
     this.petInBoxHold = false;
     this.petOnIconHold = false;
     this.mood = 'startled';
     const prevState = this.fsm.state;
 
-    // CRITICAL BOX FIX: A startled cat inside the box MUST leap cleanly UP and OVER the walls,
-    // NEVER disable box collision and slide horizontally through the cardboard wall!
     if (prevState === 'IN_BOX') {
       this.jumpOutNextState = 'STARTLED';
       this.jumpOutUrgent = true;
@@ -762,12 +1194,6 @@ export class CatEntity extends Container {
     this.fsm.transition('WANDER', true);
   }
 
-  /**
-   * True when the cat is airborne above box walls/flaps or perched atop a desktop icon,
-   * so main.ts places it in elevatedCatsLayer cleanly ABOVE boxFlapsLayer.
-   * Note: During the crouch phase inside JUMP_OUT_BOX (zHeight <= 2), this returns FALSE
-   * so the cat stays visibly tucked inside the box rim until takeoff!
-   */
   isElevated(): boolean {
     const state = this.fsm.state;
     if (state === 'PERCH_ICON' || (state === 'PETTED' && this.petOnIconHold)) {
@@ -800,9 +1226,6 @@ export class CatEntity extends Container {
     return this.body.radius;
   }
 
-  /**
-   * Returns current elevation in world pixels (0 when grounded, peaking 54–72px on box jumps).
-   */
   getZHeight(): number {
     return this.zHeight;
   }
@@ -842,6 +1265,16 @@ export class CatEntity extends Container {
     this.ctx = ctx;
     this.time += safeDt;
 
+    if (ctx.isKittenMode !== undefined && ctx.isKittenMode !== this.brain.isKitten()) {
+      this.setKittenMode(ctx.isKittenMode);
+    }
+    if (ctx.collarColor !== undefined || ctx.collarBell !== undefined) {
+      this.brain.setCollar(
+        ctx.collarColor ?? this.brain.getCustomization().collarColor,
+        ctx.collarBell ?? this.brain.getCustomization().hasBell,
+      );
+    }
+
     if (this.boxCooldown > 0) this.boxCooldown = Math.max(0, this.boxCooldown - safeDt);
     if (this.iconInteractCooldown > 0) this.iconInteractCooldown = Math.max(0, this.iconInteractCooldown - safeDt);
     if (this.iconCheckTimer > 0) this.iconCheckTimer = Math.max(0, this.iconCheckTimer - safeDt);
@@ -849,28 +1282,39 @@ export class CatEntity extends Container {
     if (this.zoomieCooldown > 0) this.zoomieCooldown = Math.max(0, this.zoomieCooldown - safeDt);
     if (this.socialCooldown > 0) this.socialCooldown = Math.max(0, this.socialCooldown - safeDt);
     if (this.propCooldown > 0) this.propCooldown = Math.max(0, this.propCooldown - safeDt);
+    if (this.cucumberCooldown > 0) this.cucumberCooldown = Math.max(0, this.cucumberCooldown - safeDt);
+    if (this.bellSoundCooldown > 0) this.bellSoundCooldown = Math.max(0, this.bellSoundCooldown - safeDt);
+    if (this.toyBatCooldown > 0) this.toyBatCooldown = Math.max(0, this.toyBatCooldown - safeDt);
+    if (this.soundAlertTimer > 0) {
+      this.soundAlertTimer = Math.max(0, this.soundAlertTimer - safeDt);
+      if (this.soundAlertTimer <= 0 && !this.isBusyOrAirborne()) {
+        this.earPose = 'normal';
+      }
+    }
 
-    // Ensure cardboard box spring flaps step smoothly even if main loop doesn't tick box directly
     ctx.cardboardBox?.stepIfUnstepped(safeDt);
 
-    // Preserve spine alignment if external circle-circle separation moved body
     const extDx = this.body.x - this.lastSyncedBodyX;
     const extDy = this.body.y - this.lastSyncedBodyY;
     if (Math.abs(extDx) > 0.001 || Math.abs(extDy) > 0.001) {
       this.spine.moveHeadTo(this.spine.head.x + extDx, this.spine.head.y + extDy, this.heading);
     }
 
-    // Recover squash & stretch smoothly
     const recover = 1 - Math.exp(-safeDt * 12);
     this.squashX += (1 - this.squashX) * recover;
     this.squashY += (1 - this.squashY) * recover;
 
     this.updateFacialIdleTimers(safeDt);
 
-    // Step active FSM behavior
+    // Tick CatBrain needs & circadian awareness
+    this.brain.tick(safeDt, this.fsm.state, {
+      isOnWarmZone: this.isNearWarmZone(),
+      isOnRug: ctx.surfaceManager.isOnRug(this.body.x, this.body.y),
+      date: ctx.nowDate,
+    });
+
     this.fsm.update(safeDt);
 
-    // Integrate physics for grounded non-static states
     const state = this.fsm.state;
     const isBoxOrPerchControlled =
       state === 'IN_BOX' ||
@@ -880,14 +1324,14 @@ export class CatEntity extends Container {
       state === 'PERCH_ICON' ||
       (state === 'PETTED' && (this.petInBoxHold || this.petOnIconHold));
 
-    const isStaticRest = state === 'NAP';
+    const isStaticRest =
+      state === 'NAP' || state === 'DEEP_SLEEP' || state === 'DREAMING';
 
     if (!isBoxOrPerchControlled && !isStaticRest) {
       ctx.physics.applySurfaceFriction(this.body, safeDt);
       this.body.x += this.body.vx * safeDt;
       this.body.y += this.body.vy * safeDt;
 
-      // Grounded & low-elevation cats (not IN_BOX / box-jumping) MUST ALWAYS collide with exterior box walls!
       const box = ctx.cardboardBox;
       const boxWallHeight = box?.getWallHeight() ?? BOX_WALL_HEIGHT;
       const shouldCollideBox = Boolean(
@@ -907,28 +1351,118 @@ export class CatEntity extends Container {
       const wallHit = ctx.physics.clampToBounds(this.body, 0.4);
       const hit = obsHit?.bonked ? obsHit : wallHit?.bonked ? wallHit : obsHit ?? wallHit;
 
-      if (hit && hit.bonked && state !== 'BONK') {
+      if (hit && hit.bonked && state !== 'BONK' && state !== 'CUCUMBER_SCARE') {
         this.fsm.transition('BONK', true);
       }
 
-      // Bat rolling/stationary yarn ball on contact
       this.handleYarnInteraction();
-    } else if (!isStaticRest && state !== 'JUMP_TO_BOX' && state !== 'JUMP_OUT_BOX' && state !== 'JUMP_TO_ICON' && state !== 'PERCH_ICON') {
+    } else if (
+      !isStaticRest &&
+      state !== 'JUMP_TO_BOX' &&
+      state !== 'JUMP_OUT_BOX' &&
+      state !== 'JUMP_TO_ICON' &&
+      state !== 'PERCH_ICON'
+    ) {
       this.body.vx = 0;
       this.body.vy = 0;
     }
 
-    // Update SpineChain and breed-accurate Verlet tail
     this.updateSpineAndTail(safeDt);
 
     this.lastSyncedBodyX = this.body.x;
     this.lastSyncedBodyY = this.body.y;
+    this.prevIdleSeconds = ctx.idleSeconds;
 
-    this.renderCat();
+    // Performance scaling: throttle full redraws for stationary sleeping/loafing cats when >30 cats
+    if (
+      this.isHighCatCountMode() &&
+      (isStaticRest || state === 'LOAFING' || state === 'IN_BOX') &&
+      Math.hypot(this.body.vx, this.body.vy) < 1
+    ) {
+      this.staticRenderSkipCounter = (this.staticRenderSkipCounter + 1) % 3;
+      if (this.staticRenderSkipCounter === 0) {
+        this.renderCat();
+      } else {
+        this.updateSleepTextTransform();
+      }
+    } else {
+      this.renderCat();
+    }
   }
 
   // ============================================================================
-  // FSM Definition (All 28 States)
+  // Shared Helpers for Concise FSM States
+  // ============================================================================
+
+  private getEffectiveCatCount(): number {
+    return this.ctx?.catCount ?? this.ctx?.otherCats?.length ?? 1;
+  }
+
+  private isHighCatCountMode(): boolean {
+    return this.getEffectiveCatCount() > 30;
+  }
+
+  private isBusyOrAirborne(): boolean {
+    const s = this.fsm.state;
+    return (
+      s === 'JUMP_TO_BOX' ||
+      s === 'JUMP_OUT_BOX' ||
+      s === 'JUMP_TO_ICON' ||
+      s === 'PERCH_ICON' ||
+      s === 'BONK' ||
+      s === 'CUCUMBER_SCARE' ||
+      s === 'STARTLED'
+    );
+  }
+
+  private dampVelocity(dt: number, factor = 0.72): void {
+    const d = Math.pow(factor, dt * 60);
+    this.body.vx *= d;
+    this.body.vy *= d;
+  }
+
+  private steerTowards(target: Vec2, speed: number, dt: number, turnGain = 6.5): number {
+    const dx = target.x - this.body.x;
+    const dy = target.y - this.body.y;
+    const dist = Math.hypot(dx, dy);
+    const rawAng = Math.atan2(dy, dx);
+    const steer = this.computeObstacleAvoidanceAngle(rawAng);
+    this.heading = lerpAngle(this.heading, steer, dt * turnGain);
+    this.headAngle = lerpAngle(this.headAngle, rawAng, dt * (turnGain + 2));
+    const accel = speed * this.breedProfile.locomotion.walkSpeedMultiplier * 5.4;
+    this.body.vx += Math.cos(this.heading) * accel * dt;
+    this.body.vy += Math.sin(this.heading) * accel * dt;
+    return dist;
+  }
+
+  private isNearWarmZone(): boolean {
+    const zones = this.ctx?.warmZones;
+    if (!zones) return false;
+    for (const z of zones) {
+      if (Math.hypot(z.x - this.body.x, z.y - this.body.y) <= z.radius + 16) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private shouldWakeFromIdle(): boolean {
+    const napThreshold = this.ctx?.idleNapSeconds ?? IDLE_NAP_SECONDS;
+    const returnedFromIdle = this.prevIdleSeconds >= 8 && this.ctx.idleSeconds < 2;
+    const typingWake = this.ctx.idleSeconds < napThreshold * 0.2 && this.ctx.typingActive;
+    return returnedFromIdle || typingWake;
+  }
+
+  private pickDrinkPointForProp(prop: InteractivePropState): Vec2 {
+    if (prop.drinkPoints && prop.drinkPoints.length > 0) {
+      const idx = Math.floor(this.nextRand() * prop.drinkPoints.length);
+      return { ...prop.drinkPoints[idx] };
+    }
+    return prop.interactPoint ? { ...prop.interactPoint } : { x: prop.x, y: prop.y };
+  }
+
+  // ============================================================================
+  // FSM Definition (All 50 States)
   // ============================================================================
 
   private buildFsm(): DynamicFsm<CatStateName, CatEntity> {
@@ -939,13 +1473,12 @@ export class CatEntity extends Container {
       onEnter: (cat) => {
         cat.zHeight = 0;
         cat.activePropId = null;
-        cat.stateTargetDuration = cat.randRange(1.1, 3.8) * (0.75 + cat.personality.laziness * 0.55);
+        cat.earPose = 'normal';
+        cat.stateTargetDuration = cat.randRange(1.0, 3.4) * (0.75 + cat.personality.laziness * 0.55);
         cat.napSpot = null;
       },
       onUpdate: (cat, dt, stateTime) => {
-        if (cat.checkImmediateStimuli()) {
-          return;
-        }
+        if (cat.checkImmediateStimuli()) return;
 
         const napThreshold = cat.ctx.idleNapSeconds ?? IDLE_NAP_SECONDS;
         if (cat.ctx.idleSeconds >= napThreshold) {
@@ -991,21 +1524,21 @@ export class CatEntity extends Container {
       },
     });
 
-    // 2. WANDER (Decorrelated multi-scale Perlin + waypoint + breed locomotion!)
+    // 2. WANDER (Natural pauses, mid-walk sniff/glance, Perlin + waypoint + breed locomotion)
     fsm.register('WANDER', {
       onEnter: (cat) => {
         cat.zHeight = 0;
         cat.headingForBox = false;
-        cat.stateTargetDuration = cat.randRange(2.2, 6.2) * (1.25 - cat.personality.laziness * 0.45);
+        cat.wanderPauseTimer = 0;
+        cat.wanderPauseCooldown = cat.randRange(1.4, 3.4);
+        cat.stateTargetDuration = cat.randRange(2.4, 6.2) * (1.25 - cat.personality.laziness * 0.45);
         cat.wanderHeading = normalizeAngle(
           cat.heading + cat.noise.noise2D(cat.time * 0.6 + cat.noiseOffsetX, cat.noiseOffsetY * 0.5) * 1.65,
         );
         cat.pickNewWanderGoal();
       },
       onUpdate: (cat, dt, stateTime) => {
-        if (cat.checkImmediateStimuli()) {
-          return;
-        }
+        if (cat.checkImmediateStimuli()) return;
 
         const napThreshold = cat.ctx.idleNapSeconds ?? IDLE_NAP_SECONDS;
         if (cat.ctx.idleSeconds >= napThreshold) {
@@ -1019,13 +1552,11 @@ export class CatEntity extends Container {
           }
         }
 
-        // Explicit UI/demo icon play target
         if (cat.pendingIconPlay) {
           cat.stepPendingIconPlay(dt);
           return;
         }
 
-        // Opportunistic playful/social/prop/box transitions while wandering
         cat.headingForBox = false;
         const box = cat.ctx.cardboardBox;
         if (cat.ctx.idleSeconds < napThreshold && !cat.napSpot) {
@@ -1045,6 +1576,28 @@ export class CatEntity extends Container {
           }
         }
 
+        // Natural mid-walk pause to sit/look around/sniff instead of robotic marching
+        if (!cat.napSpot && !cat.headingForBox) {
+          if (cat.wanderPauseTimer > 0) {
+            cat.wanderPauseTimer -= dt;
+            cat.dampVelocity(dt, 0.72);
+            cat.headAngle = lerpAngle(
+              cat.headAngle,
+              cat.heading + Math.sin(cat.time * 4.5 + cat.noiseOffsetX) * 0.55,
+              dt * 5,
+            );
+            return;
+          }
+          cat.wanderPauseCooldown -= dt;
+          if (cat.wanderPauseCooldown <= 0) {
+            cat.wanderPauseCooldown = cat.randRange(2.4, 5.2);
+            if (cat.nextRand() < 0.45) {
+              cat.wanderPauseTimer = cat.randRange(0.45, 1.15);
+              return;
+            }
+          }
+        }
+
         const loco = cat.breedProfile.locomotion;
         const paceWave =
           0.84 + 0.28 * Math.sin(cat.time * cat.paceModFreq + cat.paceModPhase);
@@ -1056,7 +1609,6 @@ export class CatEntity extends Container {
           targetSpeed = 112 * loco.walkSpeedMultiplier;
         } else {
           if (!cat.headingForBox) {
-            // Decorrelated two-octave Perlin curvature + individual waypoint goal
             const nPrimary = cat.noise.noise2D(
               cat.time * cat.wanderNoiseFreq + cat.noiseOffsetX,
               cat.noiseOffsetY,
@@ -1106,15 +1658,24 @@ export class CatEntity extends Container {
       },
     });
 
-    // 3. STALK & CHASE_LASER
+    // 3. STALK & CHASE_LASER (with realistic laser boredom after ~8-12s!)
     const stalkHooks = {
       onEnter: (cat: CatEntity) => {
         cat.zHeight = 0;
         cat.investigateSniffTimer = 0;
-        cat.mood = 'playful';
+        cat.mood = 'hunting';
+        cat.earPose = 'forward';
       },
       onUpdate: (cat: CatEntity, dt: number, stateTime: number) => {
         const laser = cat.resolveLaserTarget();
+        if (laser && cat.brain.trackLaserChase(dt, true)) {
+          cat.activeTarget = null;
+          cat.mood = 'content';
+          cat.earPose = 'normal';
+          cat.fsm.transition(cat.nextRand() < 0.5 ? 'GROOMING' : 'WANDER');
+          return;
+        }
+
         const yarn = cat.ctx.yarnBall;
         const yarnActive = yarn && yarn.isRolling() ? yarn.getPosition() : null;
         const critter = cat.findNearestCritter(280);
@@ -1134,6 +1695,7 @@ export class CatEntity extends Container {
         }
 
         if (!targetPos) {
+          cat.brain.trackLaserChase(dt, false);
           cat.fsm.transition('IDLE');
           return;
         }
@@ -1149,8 +1711,7 @@ export class CatEntity extends Container {
 
         if (isInvestigate) {
           if (dist < 46) {
-            cat.body.vx *= Math.pow(0.7, dt * 60);
-            cat.body.vy *= Math.pow(0.7, dt * 60);
+            cat.dampVelocity(dt, 0.7);
             cat.investigateSniffTimer += dt;
             cat.headAngle = angleToTarget + Math.sin(cat.time * 14) * 0.14;
             if (cat.investigateSniffTimer >= 1.15) {
@@ -1170,8 +1731,11 @@ export class CatEntity extends Container {
         cat.body.vy += Math.sin(cat.heading) * stealthAccel * dt;
 
         if ((dist <= 145 && dist >= 24 && stateTime >= 0.42) || (dist < 24 && stateTime >= 0.28)) {
-          cat.fsm.transition('WIGGLE');
+          cat.fsm.transition('POUNCE_WIGGLE');
         }
+      },
+      onExit: (cat: CatEntity) => {
+        cat.earPose = 'normal';
       },
     };
     fsm.register('STALK', stalkHooks);
@@ -1183,6 +1747,7 @@ export class CatEntity extends Container {
         cat.zHeight = 0;
         cat.investigateSniffTimer = 0;
         cat.mood = 'curious';
+        cat.earPose = 'forward';
       },
       onUpdate: (cat, dt) => {
         const laser = cat.resolveLaserTarget();
@@ -1203,19 +1768,21 @@ export class CatEntity extends Container {
         cat.headAngle = lerpAngle(cat.headAngle, ang, dt * 9);
 
         if (dist < 48) {
-          cat.body.vx *= Math.pow(0.7, dt * 60);
-          cat.body.vy *= Math.pow(0.7, dt * 60);
+          cat.dampVelocity(dt, 0.7);
           cat.investigateSniffTimer += dt;
           cat.headAngle = ang + Math.sin(cat.time * 15) * 0.16;
           if (cat.investigateSniffTimer >= 1.25) {
             cat.investigatePoint = null;
-            cat.fsm.transition('IDLE');
+            cat.fsm.transition(cat.nextRand() < 0.22 ? 'FLEHMEN' : 'IDLE');
           }
           return;
         }
         const speed = 88 * cat.breedProfile.locomotion.walkSpeedMultiplier;
         cat.body.vx += Math.cos(cat.heading) * speed * 5.2 * dt;
         cat.body.vy += Math.sin(cat.heading) * speed * 5.2 * dt;
+      },
+      onExit: (cat) => {
+        cat.earPose = 'normal';
       },
     });
 
@@ -1246,6 +1813,7 @@ export class CatEntity extends Container {
         if (dist < cat.body.radius + yarn.getRadius() + 8) {
           yarn.nudge(Math.cos(ang) * 260, Math.sin(ang) * 260);
           cat.ctx?.particles?.spawnDustPuff(yp.x, yp.y, Math.cos(ang) * 40, Math.sin(ang) * 40);
+          cat.emitSound('chirp');
           cat.fsm.transition('IDLE');
           return;
         }
@@ -1255,19 +1823,30 @@ export class CatEntity extends Container {
       },
     });
 
-    // 6. WIGGLE
-    fsm.register('WIGGLE', {
-      onEnter: (cat) => {
+    // 6. WIGGLE & POUNCE_WIGGLE
+    const wiggleHooks = {
+      onEnter: (cat: CatEntity) => {
         cat.zHeight = 0;
         cat.body.vx *= 0.25;
         cat.body.vy *= 0.25;
+        cat.squashX = 0.9;
+        cat.squashY = 1.12;
+        cat.mood = 'hunting';
+        cat.earPose = 'forward';
       },
-      onUpdate: (cat, dt, stateTime) => {
+      onUpdate: (cat: CatEntity, dt: number, stateTime: number) => {
         const laser = cat.resolveLaserTarget();
         if (laser) {
+          if (cat.brain.trackLaserChase(dt, true)) {
+            cat.fsm.transition('GROOMING');
+            return;
+          }
           cat.activeTarget = { x: laser.x, y: laser.y };
         } else if (cat.ctx.yarnBall?.isRolling()) {
           cat.activeTarget = cat.ctx.yarnBall.getPosition();
+        } else if (!cat.activeTarget) {
+          const toy = cat.findNearestToy(260);
+          if (toy) cat.activeTarget = { x: toy.x, y: toy.y };
         }
 
         if (cat.activeTarget) {
@@ -1276,14 +1855,18 @@ export class CatEntity extends Container {
           cat.headAngle = cat.heading;
         }
 
-        cat.body.vx *= Math.pow(0.72, dt * 60);
-        cat.body.vy *= Math.pow(0.72, dt * 60);
+        cat.dampVelocity(dt, 0.72);
 
         if (stateTime >= WIGGLE_DURATION) {
           cat.fsm.transition('POUNCE');
         }
       },
-    });
+      onExit: (cat: CatEntity) => {
+        cat.earPose = 'normal';
+      },
+    };
+    fsm.register('WIGGLE', wiggleHooks);
+    fsm.register('POUNCE_WIGGLE', wiggleHooks);
 
     // 7. POUNCE
     fsm.register('POUNCE', {
@@ -1298,8 +1881,8 @@ export class CatEntity extends Container {
         const impulse = 560 * (0.9 + cat.breedProfile.locomotion.sprintSpeedMultiplier * 0.1);
         cat.body.vx = Math.cos(cat.heading) * impulse;
         cat.body.vy = Math.sin(cat.heading) * impulse;
-        cat.squashX = 1.2;
-        cat.squashY = 0.84;
+        cat.squashX = 1.22;
+        cat.squashY = 0.82;
 
         cat.ctx?.particles?.spawnDustPuff(
           cat.body.x - Math.cos(cat.heading) * 12,
@@ -1315,6 +1898,9 @@ export class CatEntity extends Container {
 
         if (stateTime >= cat.pounceDuration) {
           cat.zHeight = 0;
+          cat.squashX = 1.15;
+          cat.squashY = 0.87;
+          cat.emitBellIfWearing();
           cat.ctx?.particles?.spawnDustPuff(cat.body.x, cat.body.y, cat.body.vx * 0.2, cat.body.vy * 0.2);
           const laser = cat.resolveLaserTarget();
           cat.fsm.transition(laser ? 'STALK' : 'IDLE');
@@ -1332,6 +1918,7 @@ export class CatEntity extends Container {
         cat.squashX = 0.72;
         cat.squashY = 1.3;
         cat.mood = 'startled';
+        cat.earPose = 'airplane';
         cat.ctx?.particles?.spawnBonkBurst(cat.body.x, cat.body.y);
         cat.ctx?.onBonk?.(cat);
       },
@@ -1339,12 +1926,13 @@ export class CatEntity extends Container {
         cat.headAngle = cat.heading + Math.sin(stateTime * 28) * 0.28;
         if (stateTime >= BONK_DAZE_DURATION) {
           cat.mood = 'content';
+          cat.earPose = 'normal';
           cat.fsm.transition('IDLE');
         }
       },
     });
 
-    // 9. NAP
+    // 9. NAP / DEEP_SLEEP / DREAMING (All display crisp animated Zzz indicator!)
     fsm.register('NAP', {
       onEnter: (cat) => {
         cat.zHeight = 0;
@@ -1353,50 +1941,143 @@ export class CatEntity extends Container {
         cat.sleepZTimer = 0.6;
         cat.napSpot = null;
         cat.mood = 'sleepy';
+        const r = cat.nextRand();
+        cat.sleepPose = r < 0.55 ? 'curled' : r < 0.82 ? 'belly_up_sleep' : 'sprawled';
       },
-      onUpdate: (cat, dt) => {
+      onUpdate: (cat, dt, stateTime) => {
         cat.sleepZTimer += dt;
-        if (cat.sleepZTimer >= 1.75) {
+        if (cat.sleepZTimer >= 1.85) {
           cat.sleepZTimer = 0;
-          cat.ctx?.particles?.spawnSleepZ(cat.spine.head.x + 6, cat.spine.head.y - 10);
+          if (!cat.isHighCatCountMode()) {
+            cat.ctx?.particles?.spawnSleepZ(cat.spine.head.x + 6, cat.spine.head.y - 10);
+          }
+        }
+
+        if (cat.shouldWakeFromIdle()) {
+          cat.fsm.transition('STRETCHING');
+          return;
         }
 
         const laser = cat.resolveLaserTarget();
-        if (laser && Math.hypot(laser.x - cat.body.x, laser.y - cat.body.y) < 220) {
+        if (laser && Math.hypot(laser.x - cat.body.x, laser.y - cat.body.y) < 190) {
           cat.activeTarget = { x: laser.x, y: laser.y };
           cat.fsm.transition('STALK');
           return;
         }
 
-        const treat = cat.findNearestTreat(220);
+        const treat = cat.findNearestTreat(200);
         if (treat) {
           cat.triggerTreatAttract(treat);
           return;
         }
 
         const napThreshold = cat.ctx.idleNapSeconds ?? IDLE_NAP_SECONDS;
-        if (cat.ctx.idleSeconds < napThreshold * 0.2 && cat.ctx.typingActive) {
+        if (stateTime >= 9.0 || cat.ctx.idleSeconds >= napThreshold * 1.45) {
+          cat.fsm.transition('DEEP_SLEEP');
+        } else if (!cat.ctx.typingActive && cat.ctx.idleSeconds < napThreshold * 0.5 && stateTime >= 11 && cat.brain.getNeeds().energy > 72) {
           cat.fsm.transition('STRETCHING');
         }
       },
     });
 
-    // 10. PETTED
+    fsm.register('DEEP_SLEEP', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.body.vx = 0;
+        cat.body.vy = 0;
+        cat.sleepZTimer = 0.9;
+        cat.mood = 'sleepy';
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        cat.sleepZTimer += dt;
+        if (cat.sleepZTimer >= 2.2) {
+          cat.sleepZTimer = 0;
+          if (!cat.isHighCatCountMode()) {
+            cat.ctx?.particles?.spawnSleepZ(cat.spine.head.x + 6, cat.spine.head.y - 10);
+          }
+        }
+
+        if (cat.shouldWakeFromIdle()) {
+          cat.fsm.transition('STRETCHING');
+          return;
+        }
+
+        if (stateTime > 3.5 && cat.nextRand() < dt * 0.16) {
+          cat.fsm.transition('DREAMING');
+        }
+      },
+    });
+
+    fsm.register('DREAMING', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.body.vx = 0;
+        cat.body.vy = 0;
+        cat.mood = 'dreaming';
+        cat.sleepZTimer = 0.7;
+        cat.dreamTwitchTimer = 0.4;
+        cat.dreamMewTimer = cat.randRange(1.4, 2.8);
+        cat.stateTargetDuration = cat.randRange(4.2, 7.2);
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        cat.sleepZTimer += dt;
+        if (cat.sleepZTimer >= 1.95) {
+          cat.sleepZTimer = 0;
+          if (!cat.isHighCatCountMode()) {
+            cat.ctx?.particles?.spawnSleepZ(cat.spine.head.x + 6, cat.spine.head.y - 10);
+          }
+        }
+
+        // Cute dreaming paw/ear/whisker twitches
+        cat.dreamTwitchTimer -= dt;
+        if (cat.dreamTwitchTimer <= 0) {
+          cat.dreamTwitchTimer = cat.randRange(0.35, 0.75);
+          if (cat.nextRand() < 0.5) cat.earTwitchLeft = 0.25;
+          else cat.earTwitchRight = 0.25;
+          cat.squashX = 1.025;
+          cat.squashY = 0.98;
+        }
+
+        cat.dreamMewTimer -= dt;
+        if (cat.dreamMewTimer <= 0) {
+          cat.dreamMewTimer = 99; // Once per dream cycle
+          cat.emitSound(cat.brain.isKitten() ? 'kitten_mew' : 'chirp');
+          cat.ctx?.particles?.spawnMusicNotes(cat.spine.head.x, cat.spine.head.y - 10, 1);
+        }
+
+        if (cat.shouldWakeFromIdle()) {
+          cat.fsm.transition('STRETCHING');
+          return;
+        }
+
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.fsm.transition('DEEP_SLEEP');
+        }
+      },
+    });
+
+    // 10. PETTED (Gentle purr body vibration + continuous overstimulation awareness)
     fsm.register('PETTED', {
       onEnter: (cat, prevState) => {
         cat.zHeight = prevState === 'PERCH_ICON' || cat.petOnIconHold ? PERCH_ELEVATION_PX : 0;
         cat.purrTimer = 0.08;
         cat.mood = 'affectionate';
+        cat.emitSound('purr');
       },
       onUpdate: (cat, dt) => {
-        cat.body.vx *= Math.pow(0.75, dt * 60);
-        cat.body.vy *= Math.pow(0.75, dt * 60);
+        cat.dampVelocity(dt, 0.75);
         cat.petHoldTimer -= dt;
         cat.purrTimer += dt;
 
         cat.headAngle = cat.heading + Math.sin(cat.time * 4.5) * 0.18;
 
-        if (cat.purrTimer >= 0.28) {
+        const petCheck = cat.brain.recordContinuousPet(dt * 0.22);
+        if (petCheck.overstimulated && !cat.petInBoxHold && !cat.petOnIconHold) {
+          cat.fsm.transition('OVERSTIMULATED', true);
+          return;
+        }
+
+        if (cat.purrTimer >= 0.3) {
           cat.purrTimer = 0;
           const liftY = -cat.zHeight * 0.68;
           cat.ctx?.particles?.spawnPurr(cat.spine.head.x, cat.spine.head.y + liftY - 8);
@@ -1419,7 +2100,8 @@ export class CatEntity extends Container {
             cat.fsm.transition('PERCH_ICON');
             return;
           }
-          cat.fsm.transition(cat.nextRand() < 0.35 ? 'ROLL_BELLY' : 'IDLE');
+          const roll = cat.nextRand();
+          cat.fsm.transition(roll < 0.3 ? 'ROLL_BELLY' : roll < 0.5 ? 'KNEADING' : 'IDLE');
         }
       },
       onExit: (cat) => {
@@ -1429,45 +2111,52 @@ export class CatEntity extends Container {
       },
     });
 
-    // 11. STARTLED
+    // 11. STARTLED (High 52-68px parabolic vertical jump + puffed tail + flat ears + scamper!)
     fsm.register('STARTLED', {
       onEnter: (cat) => {
         const origin = cat.startleFrom ?? { x: cat.body.x - 40, y: cat.body.y };
         const awayAngle = Math.atan2(cat.body.y - origin.y, cat.body.x - origin.x);
         cat.heading = awayAngle;
         cat.headAngle = awayAngle;
-        cat.body.vx = Math.cos(awayAngle) * 440;
-        cat.body.vy = Math.sin(awayAngle) * 440;
-        cat.squashX = 1.18;
-        cat.squashY = 0.85;
+        const peakZ = cat.startlePeakZ > 0 ? cat.startlePeakZ : cat.randRange(54, 66);
+        cat.startleJumpPeakZ = clamp(peakZ, 52, 68);
+        cat.body.vx = Math.cos(awayAngle) * 380;
+        cat.body.vy = Math.sin(awayAngle) * 380;
+        cat.squashX = 0.84;
+        cat.squashY = 1.24;
         cat.mood = 'startled';
-        cat.ctx?.particles?.spawnDustPuff(
-          cat.body.x,
-          cat.body.y,
-          -cat.body.vx * 0.25,
-          -cat.body.vy * 0.25,
-        );
+        cat.earPose = 'flat_back';
+        cat.emitSound('startle');
+        cat.ctx?.particles?.spawnStartleBurst(cat.body.x, cat.body.y);
       },
-      onUpdate: (cat, _dt, stateTime) => {
-        const leapDur = 0.42;
+      onUpdate: (cat, dt, stateTime) => {
+        const leapDur = 0.56;
         if (stateTime < leapDur) {
           const u = stateTime / leapDur;
-          cat.zHeight = 32 * 4 * u * (1 - u);
+          cat.zHeight = cat.startleJumpPeakZ * 4 * u * (1 - u);
+          cat.headAngle = cat.heading + Math.sin(stateTime * 16) * 0.22;
         } else {
           cat.zHeight = 0;
+          cat.dampVelocity(dt, 0.84);
+          cat.headAngle = cat.heading + Math.sin(stateTime * 14) * 0.55;
         }
-        if (stateTime >= 0.68) {
+        if (stateTime >= 0.92) {
           cat.zHeight = 0;
+          cat.startlePeakZ = 0;
           cat.mood = 'content';
+          cat.earPose = 'normal';
+          cat.emitBellIfWearing();
           cat.fsm.transition('IDLE');
         }
       },
       onExit: (cat) => {
         cat.zHeight = 0;
+        cat.startlePeakZ = 0;
+        cat.earPose = 'normal';
       },
     });
 
-    // 12. JUMP_TO_BOX (Crouch outside -> high parabolic arc OVER walls/flaps -> land inside!)
+    // 12. JUMP_TO_BOX
     fsm.register('JUMP_TO_BOX', {
       onEnter: (cat) => {
         cat.zHeight = 0;
@@ -1552,6 +2241,7 @@ export class CatEntity extends Container {
           cat.body.y = cat.jumpEndPos.y;
           cat.squashX = 1.16;
           cat.squashY = 0.86;
+          cat.emitBellIfWearing();
           box.triggerFlapRustle(cat.heading, 0.9);
           cat.ctx?.particles?.spawnDustPuff(cat.body.x, cat.body.y, 0, 0);
           cat.fsm.transition('IN_BOX');
@@ -1573,6 +2263,7 @@ export class CatEntity extends Container {
         cat.body.vx = 0;
         cat.body.vy = 0;
         cat.mood = 'content';
+        cat.boxSleeping = cat.nextRand() < 0.35;
         cat.boxStayTimer = cat.randRange(7.5, 16.5) * (0.8 + cat.breedProfile.behaviorAffinities.boxAffinity * 0.45);
         const box = cat.ctx?.cardboardBox;
         if (box) {
@@ -1597,7 +2288,6 @@ export class CatEntity extends Container {
         cat.body.vx = 0;
         cat.body.vy = 0;
 
-        // Track delta smoothly if user drags the box
         const bp = box.getPosition();
         const prev = cat.boxLastPos ?? bp;
         const dx = bp.x - prev.x;
@@ -1642,13 +2332,14 @@ export class CatEntity extends Container {
       },
       onExit: (cat, nextState) => {
         cat.boxLastPos = null;
+        cat.boxSleeping = false;
         if (nextState !== 'JUMP_OUT_BOX' && !(nextState === 'PETTED' && cat.petInBoxHold)) {
           cat.ctx?.cardboardBox?.release(cat.id);
         }
       },
     });
 
-    // 14. JUMP_OUT_BOX (CRITICAL FIX: crouch coil inside box -> high parabolic jump OVER flaps/walls -> land cleanly OUTSIDE!)
+    // 14. JUMP_OUT_BOX
     fsm.register('JUMP_OUT_BOX', {
       onEnter: (cat) => {
         cat.zHeight = 0;
@@ -1701,7 +2392,6 @@ export class CatEntity extends Container {
           cat.headAngle = cat.heading;
         }
 
-        // Coil/crouch inside box + subtle cardboard tremor
         cat.squashX = 0.82;
         cat.squashY = 1.2;
         box?.triggerTremble(cat.jumpCrouchDur);
@@ -1710,7 +2400,6 @@ export class CatEntity extends Container {
         cat.body.vx = 0;
         cat.body.vy = 0;
 
-        // Phase 1: Brief crouch/anticipation coil inside box (stays under boxFlapsLayer)
         if (stateTime < cat.jumpCrouchDur) {
           cat.zHeight = 0;
           cat.jumpProgress = 0;
@@ -1719,7 +2408,6 @@ export class CatEntity extends Container {
           return;
         }
 
-        // Phase 2: Spring launch with flap rustle & takeoff puff
         if (!cat.jumpTakenOff) {
           cat.jumpTakenOff = true;
           cat.squashX = 1.22;
@@ -1733,13 +2421,10 @@ export class CatEntity extends Container {
           );
         }
 
-        // Phase 3: Clean high parabolic arc z(u) peaking 54-72px well above box wall (26px)
         const u = clamp((stateTime - cat.jumpCrouchDur) / cat.jumpFlightDur, 0, 1);
         cat.jumpProgress = u;
         cat.zHeight = cat.jumpPeakZ * 4 * u * (1 - u);
 
-        // Smoothstep horizontal progression keeps cat inside box while rising above rim,
-        // carries cat cleanly OVER the rim & flaps near apex, and touches down outside!
         const horiz = smoothstep(u);
         cat.body.x = cat.jumpStartPos.x + (cat.jumpEndPos.x - cat.jumpStartPos.x) * horiz;
         cat.body.y = cat.jumpStartPos.y + (cat.jumpEndPos.y - cat.jumpStartPos.y) * horiz;
@@ -1751,6 +2436,7 @@ export class CatEntity extends Container {
           cat.body.y = cat.jumpEndPos.y;
           cat.squashX = 1.18;
           cat.squashY = 0.85;
+          cat.emitBellIfWearing();
           cat.ctx?.particles?.spawnDustPuff(
             cat.body.x,
             cat.body.y,
@@ -1867,6 +2553,7 @@ export class CatEntity extends Container {
           cat.body.y = cat.jumpEndPos.y;
           cat.squashX = 1.12;
           cat.squashY = 0.9;
+          cat.emitBellIfWearing();
           cat.ctx?.onIconPerchChange?.(cat.id, activeIcon.id);
           cat.fsm.transition('PERCH_ICON');
         }
@@ -1923,6 +2610,7 @@ export class CatEntity extends Container {
             cat.body.y = cat.jumpEndPos.y;
             cat.squashX = 1.12;
             cat.squashY = 0.89;
+            cat.emitBellIfWearing();
             cat.ctx?.particles?.spawnDustPuff(cat.body.x, cat.body.y, 0, 0);
             cat.iconInteractCooldown = cat.randRange(9, 15);
             if (cat.targetTreat) {
@@ -2083,35 +2771,60 @@ export class CatEntity extends Container {
       },
     });
 
-    // ========================================================================
-    // 10 RICH NEW CAT BEHAVIORS
-    // ========================================================================
-
-    // 18. GROOMING: tucks down, lifts front paw cyclically to lick & wipe ear/face with sparkle!
+    // 18. GROOMING (Multi-stage: lick paw -> wipe face -> clean ears -> lick belly + random freeze!)
     fsm.register('GROOMING', {
       onEnter: (cat) => {
         cat.zHeight = 0;
         cat.mood = 'content';
         cat.groomPhase = 0;
-        cat.groomSparkleTimer = 0.55;
+        cat.groomStage = 0;
+        cat.groomFreezeTimer = 0;
+        cat.groomSparkleTimer = 0.65;
+        const isMidday = cat.getCircadianPhase() === 'midday';
         cat.stateTargetDuration =
-          cat.randRange(3.2, 5.6) * (0.75 + cat.breedProfile.behaviorAffinities.grooming * 0.45);
+          cat.randRange(3.4, 5.8) *
+          (0.75 + cat.breedProfile.behaviorAffinities.grooming * 0.45) *
+          (isMidday ? 1.25 : 1);
       },
       onUpdate: (cat, dt, stateTime) => {
         if (cat.checkImmediateStimuli()) return;
-        cat.body.vx *= Math.pow(0.74, dt * 60);
-        cat.body.vy *= Math.pow(0.74, dt * 60);
+        cat.dampVelocity(dt, 0.74);
 
-        cat.groomPhase += dt * 1.35;
-        // Rhythmic head nod & tilt toward raised grooming paw
+        // Random hilarious mid-lick freeze!
+        if (cat.groomFreezeTimer > 0) {
+          cat.groomFreezeTimer -= dt;
+          cat.earPose = 'forward';
+          return;
+        }
+        cat.earPose = 'normal';
+
+        const u = clamp(stateTime / cat.stateTargetDuration, 0, 1);
+        cat.groomStage = u < 0.28 ? 0 : u < 0.55 ? 1 : u < 0.78 ? 2 : 3;
+
+        if (u > 0.2 && u < 0.85 && cat.nextRand() < dt * 0.18) {
+          cat.groomFreezeTimer = cat.randRange(0.55, 1.05);
+          return;
+        }
+
+        cat.groomPhase += dt * (cat.groomStage === 1 ? 1.55 : 1.25);
+        const stageHeadOffset =
+          cat.groomStage === 0
+            ? 0.2
+            : cat.groomStage === 1
+              ? 0.32
+              : cat.groomStage === 2
+                ? -0.25
+                : 0.75;
         cat.headAngle = normalizeAngle(
-          cat.heading + 0.18 + Math.sin(cat.groomPhase * Math.PI * 2) * 0.16,
+          cat.heading + stageHeadOffset + Math.sin(cat.groomPhase * Math.PI * 2) * 0.16,
         );
 
         cat.groomSparkleTimer -= dt;
         if (cat.groomSparkleTimer <= 0) {
-          cat.groomSparkleTimer = cat.randRange(0.95, 1.55);
-          cat.ctx?.particles?.spawnGroomSparkle(cat.spine.head.x, cat.spine.head.y - 6);
+          cat.groomSparkleTimer = cat.randRange(1.0, 1.65);
+          if (!cat.isHighCatCountMode()) {
+            cat.ctx?.particles?.spawnGroomSparkle(cat.spine.head.x, cat.spine.head.y - 6);
+          }
         }
 
         if (stateTime >= cat.stateTargetDuration) {
@@ -2119,9 +2832,13 @@ export class CatEntity extends Container {
           cat.fsm.transition(cat.nextRand() < 0.35 ? 'LOAFING' : 'IDLE');
         }
       },
+      onExit: (cat) => {
+        cat.earPose = 'normal';
+        cat.groomFreezeTimer = 0;
+      },
     });
 
-    // 19. LOAFING: bread-loaf silhouette, paws tucked neatly underneath, gentle breathing & slow blinks
+    // 19. LOAFING
     fsm.register('LOAFING', {
       onEnter: (cat) => {
         cat.zHeight = 0;
@@ -2131,21 +2848,19 @@ export class CatEntity extends Container {
       },
       onUpdate: (cat, dt, stateTime) => {
         if (cat.checkImmediateStimuli()) return;
-        cat.body.vx *= Math.pow(0.7, dt * 60);
-        cat.body.vy *= Math.pow(0.7, dt * 60);
+        cat.dampVelocity(dt, 0.7);
 
         const gaze = cat.noise.noise2D(cat.time * 0.22 + cat.noiseOffsetX, cat.noiseOffsetY) * 0.36;
         cat.headAngle = lerpAngle(cat.headAngle, cat.heading + gaze, dt * 1.8);
 
         if (stateTime >= cat.stateTargetDuration) {
           cat.behaviorCooldown = cat.randRange(4.0, 8.0);
-          // Classic cat move: rise from a cozy loaf into a big stretch!
           cat.fsm.transition(cat.nextRand() < 0.65 ? 'STRETCHING' : 'WANDER');
         }
       },
     });
 
-    // 20. STRETCHING: big bow-stretch (front paws extended far forward, torso elongated, tail raised!)
+    // 20. STRETCHING (front paws extended, butt up + yawn!)
     fsm.register('STRETCHING', {
       onEnter: (cat) => {
         cat.zHeight = 0;
@@ -2158,8 +2873,7 @@ export class CatEntity extends Container {
           cat.fsm.transition('STALK');
           return;
         }
-        cat.body.vx *= Math.pow(0.72, dt * 60);
-        cat.body.vy *= Math.pow(0.72, dt * 60);
+        cat.dampVelocity(dt, 0.72);
 
         const u = clamp(stateTime / cat.stretchDuration, 0, 1);
         if (u < 0.32) {
@@ -2182,7 +2896,7 @@ export class CatEntity extends Container {
       },
     });
 
-    // 21. ZOOMIES: high-energy burst of swooping curved sprints with puffed tail & dust clouds!
+    // 21. ZOOMIES (Sudden explosive curved sprints -> abrupt halt + casual grooming!)
     fsm.register('ZOOMIES', {
       onEnter: (cat) => {
         cat.zHeight = 0;
@@ -2193,6 +2907,7 @@ export class CatEntity extends Container {
         cat.wanderHeading = normalizeAngle(cat.heading + cat.randRange(-1.2, 1.2));
         cat.squashX = 1.2;
         cat.squashY = 0.84;
+        cat.emitBellIfWearing();
       },
       onUpdate: (cat, dt, stateTime) => {
         const laser = cat.resolveLaserTarget();
@@ -2202,14 +2917,12 @@ export class CatEntity extends Container {
           return;
         }
 
-        // Swooping curved sprint steering with strong edge & obstacle banking
         const curveWave = Math.sin(stateTime * 2.6 + cat.noiseOffsetX) * cat.zoomieCurveDir;
         const noiseSteer = cat.noise.noise2D(cat.time * 1.4 + cat.noiseOffsetX, cat.noiseOffsetY);
         cat.wanderHeading = normalizeAngle(
           cat.wanderHeading + (curveWave * 2.4 + noiseSteer * 1.8) * dt,
         );
 
-        // Soft inward turn well before hitting screen boundaries
         const bounds = cat.ctx.physics.getBounds();
         const edgeMargin = 95;
         if (
@@ -2231,7 +2944,6 @@ export class CatEntity extends Container {
         cat.body.vx += Math.cos(cat.heading) * sprintSpeed * 6.5 * dt;
         cat.body.vy += Math.sin(cat.heading) * sprintSpeed * 6.5 * dt;
 
-        // Clamp speed just under bonk threshold during sweeping curves so zoomies stay joyful
         const maxZoomieSpeed = 335 * Math.max(0.95, loco.sprintSpeedMultiplier);
         const curSpeed = Math.hypot(cat.body.vx, cat.body.vy);
         if (curSpeed > maxZoomieSpeed) {
@@ -2240,7 +2952,6 @@ export class CatEntity extends Container {
           cat.body.vy *= s;
         }
 
-        // Subtle bounding micro-hop while sprinting (strictly grounded <= 1.6px so exterior box walls remain solid)
         cat.zHeight = Math.min(
           1.6,
           Math.abs(Math.sin(cat.walkPhase * 0.85)) * (1.1 + loco.hopBounceFactor * 0.65),
@@ -2248,20 +2959,25 @@ export class CatEntity extends Container {
 
         cat.zoomieDustTimer -= dt;
         if (cat.zoomieDustTimer <= 0) {
-          cat.zoomieDustTimer = 0.14;
-          cat.ctx?.particles?.spawnZoomieDust(
-            cat.spine.hips.x,
-            cat.spine.hips.y,
-            cat.body.vx,
-            cat.body.vy,
-          );
+          cat.zoomieDustTimer = 0.16;
+          if (!cat.isHighCatCountMode()) {
+            cat.ctx?.particles?.spawnZoomieDust(
+              cat.spine.hips.x,
+              cat.spine.hips.y,
+              cat.body.vx,
+              cat.body.vy,
+            );
+          }
         }
 
         if (stateTime >= cat.zoomieDuration) {
           cat.zHeight = 0;
+          cat.body.vx *= 0.12;
+          cat.body.vy *= 0.12;
           cat.mood = 'content';
           cat.zoomieCooldown = cat.randRange(16, 32) * (1.25 - cat.personality.zoomieProneness * 0.55);
-          cat.fsm.transition(cat.nextRand() < 0.45 ? 'GROOMING' : 'IDLE');
+          // Night zoomies hallmark: halt abruptly and casually groom as if nothing happened!
+          cat.fsm.transition(cat.getCircadianPhase() === 'night' || cat.nextRand() < 0.6 ? 'GROOMING' : 'IDLE');
         }
       },
       onExit: (cat) => {
@@ -2269,7 +2985,7 @@ export class CatEntity extends Container {
       },
     });
 
-    // 22. ROLL_BELLY: playful flop exposing soft belly with wiggling toe-bean paws!
+    // 22. ROLL_BELLY
     fsm.register('ROLL_BELLY', {
       onEnter: (cat) => {
         cat.zHeight = 0;
@@ -2285,8 +3001,7 @@ export class CatEntity extends Container {
           cat.fsm.transition('STALK');
           return;
         }
-        cat.body.vx *= Math.pow(0.75, dt * 60);
-        cat.body.vy *= Math.pow(0.75, dt * 60);
+        cat.dampVelocity(dt, 0.75);
 
         cat.rollPhase += dt * 1.45;
         cat.headAngle = normalizeAngle(
@@ -2306,7 +3021,7 @@ export class CatEntity extends Container {
       },
     });
 
-    // 23. SOCIAL_PLAY: cat-to-cat nose boop, playful tag-chase, or cozy cuddle!
+    // 23. SOCIAL_PLAY
     fsm.register('SOCIAL_PLAY', {
       onEnter: (cat) => {
         cat.zHeight = 0;
@@ -2345,13 +3060,13 @@ export class CatEntity extends Container {
             cat.body.vx += Math.cos(cat.heading) * speed * 5.0 * dt;
             cat.body.vy += Math.sin(cat.heading) * speed * 5.0 * dt;
           } else {
-            cat.body.vx *= Math.pow(0.72, dt * 60);
-            cat.body.vy *= Math.pow(0.72, dt * 60);
+            cat.dampVelocity(dt, 0.72);
             if (!cat.socialHeartEmitted) {
               cat.socialHeartEmitted = true;
               const mx = (cat.body.x + pPos.x) * 0.5;
               const my = (cat.body.y + pPos.y) * 0.5;
               cat.ctx?.particles?.spawnHeartBurst(mx, my - 10, 2);
+              cat.emitSound('trill');
             }
           }
         } else if (cat.socialMode === 'chase') {
@@ -2365,9 +3080,9 @@ export class CatEntity extends Container {
           } else if (!cat.socialHeartEmitted) {
             cat.socialHeartEmitted = true;
             cat.ctx?.particles?.spawnMusicNotes(cat.body.x, cat.body.y - 10, 2);
+            cat.emitSound('chirp');
           }
         } else {
-          // Cuddle: curl up snugly right beside partner
           const sideOff = cat.body.radius + partner.getRadius() + 4;
           if (dist > sideOff + 8) {
             cat.heading = lerpAngle(cat.heading, ang, dt * 5.5);
@@ -2376,11 +3091,11 @@ export class CatEntity extends Container {
             cat.body.vx += Math.cos(cat.heading) * speed * 5.0 * dt;
             cat.body.vy += Math.sin(cat.heading) * speed * 5.0 * dt;
           } else {
-            cat.body.vx *= Math.pow(0.7, dt * 60);
-            cat.body.vy *= Math.pow(0.7, dt * 60);
+            cat.dampVelocity(dt, 0.7);
             if (!cat.socialHeartEmitted) {
               cat.socialHeartEmitted = true;
               cat.ctx?.particles?.spawnPurr((cat.body.x + pPos.x) * 0.5, (cat.body.y + pPos.y) * 0.5 - 8);
+              cat.emitSound('purr');
             }
           }
         }
@@ -2395,7 +3110,7 @@ export class CatEntity extends Container {
       },
     });
 
-    // 24. SUNBATHE: seek warm light pool (lamp/lantern/sunbeam) and stretch out lazily!
+    // 24. SUNBATHE
     fsm.register('SUNBATHE', {
       onEnter: (cat) => {
         cat.zHeight = 0;
@@ -2428,19 +3143,12 @@ export class CatEntity extends Container {
             cat.body.vx *= 0.2;
             cat.body.vy *= 0.2;
           } else {
-            const rawAng = Math.atan2(dy, dx);
-            const steer = cat.computeObstacleAvoidanceAngle(rawAng);
-            cat.heading = lerpAngle(cat.heading, steer, dt * 5.2);
-            cat.headAngle = lerpAngle(cat.headAngle, rawAng, dt * 6.5);
-            const speed = 88 * cat.breedProfile.locomotion.walkSpeedMultiplier;
-            cat.body.vx += Math.cos(cat.heading) * speed * 5.2 * dt;
-            cat.body.vy += Math.sin(cat.heading) * speed * 5.2 * dt;
+            cat.steerTowards(cat.sunbatheSpot, 88, dt, 5.2);
           }
           return;
         }
 
-        cat.body.vx *= Math.pow(0.7, dt * 60);
-        cat.body.vy *= Math.pow(0.7, dt * 60);
+        cat.dampVelocity(dt, 0.7);
         cat.headAngle = lerpAngle(
           cat.headAngle,
           cat.heading + Math.sin(cat.time * 0.7 + cat.noiseOffsetX) * 0.16,
@@ -2450,7 +3158,9 @@ export class CatEntity extends Container {
         cat.sunbathePurrTimer -= dt;
         if (cat.sunbathePurrTimer <= 0) {
           cat.sunbathePurrTimer = cat.randRange(2.4, 4.0);
-          cat.ctx?.particles?.spawnGroomSparkle(cat.body.x, cat.body.y - 8);
+          if (!cat.isHighCatCountMode()) {
+            cat.ctx?.particles?.spawnGroomSparkle(cat.body.x, cat.body.y - 8);
+          }
         }
 
         if (stateTime >= cat.sunbatheDuration) {
@@ -2464,11 +3174,12 @@ export class CatEntity extends Container {
       },
     });
 
-    // 25. MEERKAT_PEEK: perked upright curiously watching cursor, butterfly, or clicked prop!
+    // 25. MEERKAT_PEEK
     fsm.register('MEERKAT_PEEK', {
       onEnter: (cat) => {
         cat.zHeight = 0;
         cat.mood = 'curious';
+        cat.earPose = 'forward';
         cat.meerkatDuration = cat.randRange(2.0, 3.6);
         cat.squashX = 0.88;
         cat.squashY = 1.12;
@@ -2489,10 +3200,8 @@ export class CatEntity extends Container {
           cat.fsm.transition('STALK');
           return;
         }
-        cat.body.vx *= Math.pow(0.7, dt * 60);
-        cat.body.vy *= Math.pow(0.7, dt * 60);
+        cat.dampVelocity(dt, 0.7);
 
-        // Live-track nearest butterfly/firefly or cursor while peeking!
         const critter = cat.findNearestCritter(360);
         if (critter) {
           cat.meerkatTarget = { x: critter.x, y: critter.y };
@@ -2506,7 +3215,6 @@ export class CatEntity extends Container {
             cat.meerkatTarget.x - cat.body.x,
           );
           cat.heading = lerpAngle(cat.heading, ang, dt * 5.0);
-          // Cute curious head tilt wiggle
           cat.headAngle = lerpAngle(
             cat.headAngle,
             ang + Math.sin(stateTime * 3.8) * 0.14,
@@ -2521,10 +3229,11 @@ export class CatEntity extends Container {
       },
       onExit: (cat) => {
         cat.meerkatTarget = null;
+        cat.earPose = 'normal';
       },
     });
 
-    // 26. PROP_INTERACT: meaningful breed-aware interaction with every interactive scene prop!
+    // 26. PROP_INTERACT
     fsm.register('PROP_INTERACT', {
       onEnter: (cat) => {
         cat.zHeight = 0;
@@ -2541,9 +3250,9 @@ export class CatEntity extends Container {
 
         const kind = cat.targetProp.interactionType;
         cat.propDuration =
-          kind === 'cozy'
+          kind === 'cozy' || kind === 'knead'
             ? cat.randRange(5.2, 8.8)
-            : kind === 'warmth'
+            : kind === 'warmth' || kind === 'sunbeam'
               ? cat.randRange(5.5, 9.0)
               : kind === 'catnip'
                 ? cat.randRange(3.6, 5.2)
@@ -2564,7 +3273,6 @@ export class CatEntity extends Container {
         const dx = targetPt.x - cat.body.x;
         const dy = targetPt.y - cat.body.y;
         const dist = Math.hypot(dx, dy);
-        // prop.interactPoint already sits outside solid props (radius + 18px) or at cozy center
         const arrivalDist = prop.interactPoint
           ? 26
           : prop.solid
@@ -2583,29 +3291,41 @@ export class CatEntity extends Container {
               cat.propNotified = true;
               cat.ctx?.onPropInteract?.(prop.id, cat);
             }
-            if (prop.interactionType === 'warmth') {
+            if (prop.interactionType === 'warmth' || prop.interactionType === 'sunbeam') {
               cat.sunbatheSpot = { x: targetPt.x, y: targetPt.y };
               cat.fsm.transition('SUNBATHE');
+              return;
+            }
+            if (prop.interactionType === 'knead') {
+              cat.fsm.transition('KNEADING');
+              return;
+            }
+            if (prop.interactionType === 'drink') {
+              cat.drinkProp = prop;
+              cat.drinkTarget = cat.pickDrinkPointForProp(prop);
+              cat.fsm.transition('DRINKING');
+              return;
+            }
+            if (prop.interactionType === 'litter') {
+              cat.litterProp = prop;
+              cat.fsm.transition('LITTER_USE');
+              return;
+            }
+            if (prop.interactionType === 'watch') {
+              cat.chatterTarget = { x: prop.x, y: prop.y };
+              cat.fsm.transition('CHATTER');
               return;
             }
             if (prop.interactionType === 'catnip') {
               cat.ctx?.particles?.spawnCatnipSparkles(prop.x, prop.y, 7);
             }
           } else {
-            const rawAng = Math.atan2(dy, dx);
-            const steer = cat.computeObstacleAvoidanceAngle(rawAng);
-            cat.heading = lerpAngle(cat.heading, steer, dt * 6.5);
-            cat.headAngle = lerpAngle(cat.headAngle, rawAng, dt * 8.5);
-            const speed = 112 * cat.breedProfile.locomotion.walkSpeedMultiplier;
-            cat.body.vx += Math.cos(cat.heading) * speed * 5.4 * dt;
-            cat.body.vy += Math.sin(cat.heading) * speed * 5.4 * dt;
+            cat.steerTowards(targetPt, 112, dt, 6.5);
             return;
           }
         }
 
-        // Perform prop-specific animated behavior!
-        cat.body.vx *= Math.pow(0.72, dt * 60);
-        cat.body.vy *= Math.pow(0.72, dt * 60);
+        cat.dampVelocity(dt, 0.72);
         const faceAng = Math.atan2(prop.y - cat.body.y, prop.x - cat.body.x);
 
         cat.propActionTimer -= dt;
@@ -2624,10 +3344,12 @@ export class CatEntity extends Container {
             break;
 
           case 'water':
+          case 'drink':
             cat.heading = lerpAngle(cat.heading, faceAng, dt * 10);
             cat.headAngle = cat.heading + Math.sin(stateTime * 4) * 0.14;
             if (cat.propActionTimer <= 0) {
               cat.propActionTimer = 0.58;
+              cat.emitSound('water_lap');
               cat.ctx?.particles?.spawnWaterSplash(
                 cat.body.x + Math.cos(cat.heading) * 20,
                 cat.body.y + Math.sin(cat.heading) * 20,
@@ -2637,6 +3359,8 @@ export class CatEntity extends Container {
             break;
 
           case 'play':
+          case 'perch_high':
+          case 'ambush':
             cat.heading = lerpAngle(cat.heading, faceAng, dt * 11);
             cat.headAngle = cat.heading + Math.sin(stateTime * 11) * 0.15;
             if (cat.propActionTimer <= 0) {
@@ -2668,10 +3392,12 @@ export class CatEntity extends Container {
             break;
 
           case 'treat':
+          case 'nibble':
             cat.heading = lerpAngle(cat.heading, faceAng, dt * 9);
             cat.headAngle = cat.heading + Math.sin(stateTime * 12) * 0.12;
             if (cat.propActionTimer <= 0) {
               cat.propActionTimer = 0.46;
+              cat.emitSound('crunch');
               cat.ctx?.particles?.spawnKibbleCrumbs(
                 cat.spine.head.x + Math.cos(cat.heading) * 6,
                 cat.spine.head.y + Math.sin(cat.heading) * 6,
@@ -2695,7 +3421,13 @@ export class CatEntity extends Container {
           const wasCatnip = prop.interactionType === 'catnip';
           cat.propCooldown = cat.randRange(6, 13);
           cat.fsm.transition(
-            wasCatnip && cat.nextRand() < 0.7 ? 'ZOOMIES' : prop.interactionType === 'cozy' ? 'STRETCHING' : 'WANDER',
+            wasCatnip && cat.nextRand() < 0.7
+              ? 'ZOOMIES'
+              : prop.interactionType === 'cozy'
+                ? 'STRETCHING'
+                : prop.interactionType === 'sniff' && cat.nextRand() < 0.25
+                  ? 'FLEHMEN'
+                  : 'WANDER',
           );
         }
       },
@@ -2708,7 +3440,7 @@ export class CatEntity extends Container {
       },
     });
 
-    // 27. EATING_TREAT: trots excitedly to dropped treat and crunches kibble crumbs!
+    // 27. EATING_TREAT
     fsm.register('EATING_TREAT', {
       onEnter: (cat) => {
         cat.zHeight = 0;
@@ -2741,19 +3473,12 @@ export class CatEntity extends Container {
             cat.fsm.transition('IDLE');
             return;
           }
-          const rawAng = Math.atan2(dy, dx);
-          const steer = cat.computeObstacleAvoidanceAngle(rawAng);
-          cat.heading = lerpAngle(cat.heading, steer, dt * 8.0);
-          cat.headAngle = lerpAngle(cat.headAngle, rawAng, dt * 10);
-          const speed = 152 * cat.breedProfile.locomotion.sprintSpeedMultiplier;
-          cat.body.vx += Math.cos(cat.heading) * speed * 5.6 * dt;
-          cat.body.vy += Math.sin(cat.heading) * speed * 5.6 * dt;
+          cat.steerTowards(liveTreat, 152, dt, 8.0);
           return;
         }
 
         cat.treatArrived = true;
-        cat.body.vx *= Math.pow(0.7, dt * 60);
-        cat.body.vy *= Math.pow(0.7, dt * 60);
+        cat.dampVelocity(dt, 0.7);
         const faceAng = Math.atan2(dy, dx);
         cat.heading = lerpAngle(cat.heading, faceAng, dt * 9);
         cat.headAngle = faceAng + Math.sin(stateTime * 15) * 0.12;
@@ -2763,6 +3488,8 @@ export class CatEntity extends Container {
           cat.treatBiteTimer = 0.44;
           cat.squashX = 1.07;
           cat.squashY = 0.94;
+          cat.emitSound('crunch');
+          cat.brain.recordInteraction('treat', 0.4);
           cat.ctx?.particles?.spawnKibbleCrumbs(liveTreat.x, liveTreat.y, 4);
           const hadMore = cat.ctx?.onConsumeTreat?.(liveTreat.id, cat);
           if (hadMore === false) {
@@ -2779,6 +3506,886 @@ export class CatEntity extends Container {
       },
     });
 
+    // ========================================================================
+    // 20 NEW V2.0 REAL-LIFE CAT BEHAVIORS (completing all 50 states!)
+    // ========================================================================
+
+    // 28. KNEADING (Rhythmic alternating front paws "making biscuits" on rugs/blankets/beds)
+    fsm.register('KNEADING', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.mood = 'affectionate';
+        cat.kneadPhase = 0;
+        cat.purrTimer = 0.15;
+        cat.stateTargetDuration = cat.randRange(3.6, 6.4);
+        cat.emitSound('purr');
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        if (cat.checkImmediateStimuli()) return;
+        cat.dampVelocity(dt, 0.72);
+        cat.kneadPhase += dt * 2.4;
+        cat.headAngle = lerpAngle(
+          cat.headAngle,
+          cat.heading + Math.sin(cat.kneadPhase * Math.PI) * 0.09,
+          dt * 5,
+        );
+        cat.purrTimer += dt;
+        if (cat.purrTimer >= 0.85) {
+          cat.purrTimer = 0;
+          cat.ctx?.particles?.spawnPurr(cat.body.x, cat.body.y - 10);
+        }
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.fsm.transition(cat.nextRand() < 0.55 ? 'LOAFING' : 'NAP');
+        }
+      },
+    });
+
+    // 29. SLOW_BLINK ("I trust you" affectionate slow blink toward cursor/user)
+    fsm.register('SLOW_BLINK', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.mood = 'affectionate';
+        cat.slowBlinkPhase = 0;
+        cat.stateTargetDuration = 2.05;
+        if (cat.ctx?.cursorPos) {
+          const ang = Math.atan2(
+            cat.ctx.cursorPos.y - cat.body.y,
+            cat.ctx.cursorPos.x - cat.body.x,
+          );
+          cat.headAngle = ang;
+        }
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        if (cat.resolveLaserTarget()) {
+          cat.fsm.transition('STALK');
+          return;
+        }
+        cat.dampVelocity(dt, 0.7);
+        if (cat.ctx?.cursorPos) {
+          const ang = Math.atan2(
+            cat.ctx.cursorPos.y - cat.body.y,
+            cat.ctx.cursorPos.x - cat.body.x,
+          );
+          cat.headAngle = lerpAngle(cat.headAngle, ang, dt * 4);
+        }
+        cat.slowBlinkPhase = stateTime;
+        if (stateTime >= 0.35 && stateTime <= 1.25) {
+          cat.blinkDuration = 0.25;
+        }
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.ctx?.particles?.spawnHeartBurst(cat.spine.head.x, cat.spine.head.y - 10, 1);
+          cat.fsm.transition('LOAFING');
+        }
+      },
+      onExit: (cat) => {
+        cat.slowBlinkPhase = 0;
+      },
+    });
+
+    // 30. CHATTER (Vibrating jaw/whiskers + ek-ek-ek puffs toward birds/moths/fish/aquarium)
+    fsm.register('CHATTER', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.mood = 'hunting';
+        cat.earPose = 'forward';
+        cat.chatterTimer = 0.1;
+        cat.stateTargetDuration = cat.randRange(2.2, 3.8);
+        if (!cat.chatterTarget) {
+          const critter = cat.findNearestCritter(450);
+          cat.chatterTarget = critter
+            ? { x: critter.x, y: critter.y }
+            : { x: cat.body.x + Math.cos(cat.heading) * 120, y: cat.body.y + Math.sin(cat.heading) * 120 };
+        }
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        if (cat.resolveLaserTarget()) {
+          cat.fsm.transition('STALK');
+          return;
+        }
+        cat.dampVelocity(dt, 0.72);
+        const critter = cat.findNearestCritter(420);
+        if (critter) {
+          cat.chatterTarget = { x: critter.x, y: critter.y };
+        }
+        if (cat.chatterTarget) {
+          const ang = Math.atan2(
+            cat.chatterTarget.y - cat.body.y,
+            cat.chatterTarget.x - cat.body.x,
+          );
+          cat.heading = lerpAngle(cat.heading, ang, dt * 8);
+          cat.headAngle = ang + Math.sin(stateTime * 46) * 0.06;
+        }
+        cat.chatterTimer -= dt;
+        if (cat.chatterTimer <= 0) {
+          cat.chatterTimer = cat.randRange(0.32, 0.55);
+          cat.emitSound('chatter');
+          cat.ctx?.particles?.spawnChatterPuff(cat.spine.head.x, cat.spine.head.y - 6);
+        }
+        if (stateTime >= cat.stateTargetDuration) {
+          const shouldPounce = cat.nextRand() < 0.45 && cat.chatterTarget !== null;
+          if (shouldPounce && cat.chatterTarget) {
+            cat.activeTarget = { ...cat.chatterTarget };
+            cat.fsm.transition('POUNCE_WIGGLE');
+          } else {
+            cat.fsm.transition('IDLE');
+          }
+        }
+      },
+      onExit: (cat) => {
+        cat.chatterTarget = null;
+        cat.earPose = 'normal';
+      },
+    });
+
+    // 31. STARE_VOID (Freezes abruptly and stares intensely at nothing in a corner)
+    fsm.register('STARE_VOID', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.body.vx = 0;
+        cat.body.vy = 0;
+        cat.mood = 'curious';
+        cat.earPose = 'forward';
+        cat.stateTargetDuration = cat.randRange(2.6, 4.6);
+        const bounds = cat.ctx?.physics?.getBounds() ?? { width: 1280, height: 720 };
+        const cornerX = cat.nextRand() < 0.5 ? 24 : bounds.width - 24;
+        const cornerY = cat.nextRand() < 0.5 ? 24 : bounds.height - 24;
+        cat.voidStarePoint = { x: cornerX, y: cornerY };
+        const ang = Math.atan2(cornerY - cat.body.y, cornerX - cat.body.x);
+        cat.heading = ang;
+        cat.headAngle = ang;
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        if (cat.resolveLaserTarget()) {
+          cat.fsm.transition('STALK');
+          return;
+        }
+        cat.dampVelocity(dt, 0.68);
+        if (cat.voidStarePoint) {
+          const ang = Math.atan2(
+            cat.voidStarePoint.y - cat.body.y,
+            cat.voidStarePoint.x - cat.body.x,
+          );
+          cat.headAngle = lerpAngle(cat.headAngle, ang, dt * 10);
+        }
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.fsm.transition('WANDER');
+        }
+      },
+      onExit: (cat) => {
+        cat.voidStarePoint = null;
+        cat.earPose = 'normal';
+      },
+    });
+
+    // 32. HEAD_BUNT (Cheek-rubbing furniture/props/other cats affectionately)
+    fsm.register('HEAD_BUNT', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.mood = 'affectionate';
+        cat.headBuntArrived = false;
+        cat.stateTargetDuration = 3.2;
+        const props = cat.ctx?.interactiveProps;
+        if (props && props.length > 0) {
+          const prop = props[Math.floor(cat.nextRand() * props.length)];
+          cat.headBuntTarget = prop.interactPoint
+            ? { ...prop.interactPoint }
+            : { x: prop.x, y: prop.y };
+        } else if (cat.ctx?.cursorPos) {
+          cat.headBuntTarget = { ...cat.ctx.cursorPos };
+        } else {
+          cat.headBuntTarget = {
+            x: cat.body.x + Math.cos(cat.heading) * 65,
+            y: cat.body.y + Math.sin(cat.heading) * 65,
+          };
+        }
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        if (!cat.headBuntTarget) {
+          cat.fsm.transition('IDLE');
+          return;
+        }
+        if (!cat.headBuntArrived) {
+          const d = cat.steerTowards(cat.headBuntTarget, 98, dt, 6.5);
+          if (d <= 28 || stateTime > 2.2) {
+            cat.headBuntArrived = true;
+            cat.emitSound('purr');
+            cat.ctx?.particles?.spawnHeartBurst(cat.spine.head.x, cat.spine.head.y - 8, 2);
+          }
+          return;
+        }
+        cat.dampVelocity(dt, 0.72);
+        cat.headAngle = cat.heading + Math.sin(stateTime * 8) * 0.36;
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.fsm.transition('IDLE');
+        }
+      },
+      onExit: (cat) => {
+        cat.headBuntTarget = null;
+      },
+    });
+
+    // 33. FLEHMEN (Open-mouth "gross face" after sniffing weird objects/litter)
+    fsm.register('FLEHMEN', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.body.vx = 0;
+        cat.body.vy = 0;
+        cat.mood = 'curious';
+        cat.stateTargetDuration = cat.randRange(1.8, 2.8);
+        cat.squashX = 0.94;
+        cat.squashY = 1.07;
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        cat.dampVelocity(dt, 0.7);
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.fsm.transition('IDLE');
+        }
+      },
+    });
+
+    // 34. SNEEZE_HICCUP (Tiny recoil + air puff + sneeze sound)
+    fsm.register('SNEEZE_HICCUP', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.sneezeDone = false;
+        cat.sneezeTimer = 0.36;
+        cat.stateTargetDuration = 1.15;
+        cat.squashX = 1.08;
+        cat.squashY = 0.92;
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        cat.dampVelocity(dt, 0.78);
+        if (!cat.sneezeDone && stateTime >= cat.sneezeTimer) {
+          cat.sneezeDone = true;
+          cat.squashX = 0.8;
+          cat.squashY = 1.24;
+          cat.body.vx = -Math.cos(cat.heading) * 90;
+          cat.body.vy = -Math.sin(cat.heading) * 90;
+          cat.emitSound('sneeze');
+          cat.ctx?.particles?.spawnSneezePuff(cat.spine.head.x, cat.spine.head.y, cat.headAngle);
+        }
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.fsm.transition('GROOMING');
+        }
+      },
+    });
+
+    // 35. TRIP_RECOVER (Comedic brief trip/tumble then immediate proud grooming!)
+    fsm.register('TRIP_RECOVER', {
+      onEnter: (cat) => {
+        cat.zHeight = 6;
+        cat.squashX = 1.26;
+        cat.squashY = 0.76;
+        cat.body.vx = Math.cos(cat.heading) * 140;
+        cat.body.vy = Math.sin(cat.heading) * 140;
+        cat.stateTargetDuration = 0.85;
+        cat.ctx?.particles?.spawnDustPuff(cat.body.x, cat.body.y, 0, 0);
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        cat.dampVelocity(dt, 0.82);
+        const u = clamp(stateTime / 0.35, 0, 1);
+        cat.zHeight = stateTime < 0.35 ? 12 * 4 * u * (1 - u) : 0;
+        cat.headAngle = cat.heading + Math.sin(stateTime * 22) * 0.35;
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.zHeight = 0;
+          cat.fsm.transition('GROOMING');
+        }
+      },
+      onExit: (cat) => {
+        cat.zHeight = 0;
+      },
+    });
+
+    // 36. DRINKING (Crouches at enlarged pond/fountain/water glass with gentle ripples & lapping!)
+    fsm.register('DRINKING', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.drinkArrived = false;
+        cat.drinkLapTimer = 0.15;
+        cat.stateTargetDuration = cat.randRange(3.4, 5.4);
+        if (!cat.drinkProp) {
+          const props = cat.ctx?.interactiveProps ?? [];
+          cat.drinkProp =
+            props.find((p) => p.interactionType === 'drink' || p.interactionType === 'water') ?? null;
+        }
+        if (cat.drinkProp) {
+          cat.activePropId = cat.drinkProp.id;
+          cat.drinkTarget = cat.drinkTarget ?? cat.pickDrinkPointForProp(cat.drinkProp);
+        } else {
+          cat.fsm.transition('IDLE');
+        }
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        if (cat.resolveLaserTarget()) {
+          cat.fsm.transition('STALK');
+          return;
+        }
+        if (!cat.drinkProp || !cat.drinkTarget) {
+          cat.fsm.transition('IDLE');
+          return;
+        }
+        if (!cat.drinkArrived) {
+          const d = cat.steerTowards(cat.drinkTarget, 96, dt, 6.5);
+          if (d <= 26 || stateTime > 4.5) {
+            cat.drinkArrived = true;
+            const face = Math.atan2(cat.drinkProp.y - cat.body.y, cat.drinkProp.x - cat.body.x);
+            cat.heading = face;
+            cat.headAngle = face;
+            cat.ctx?.onPropInteract?.(cat.drinkProp.id, cat);
+          }
+          return;
+        }
+
+        cat.dampVelocity(dt, 0.7);
+        const face = Math.atan2(cat.drinkProp.y - cat.body.y, cat.drinkProp.x - cat.body.x);
+        cat.heading = lerpAngle(cat.heading, face, dt * 8);
+        cat.headAngle = face + Math.sin(stateTime * 9) * 0.08;
+
+        cat.drinkLapTimer -= dt;
+        if (cat.drinkLapTimer <= 0) {
+          cat.drinkLapTimer = 0.48;
+          cat.emitSound('water_lap');
+          const splashX = cat.spine.head.x + Math.cos(cat.heading) * 10;
+          const splashY = cat.spine.head.y + Math.sin(cat.heading) * 10;
+          cat.ctx?.particles?.spawnChimeRipple(splashX, splashY, 0x9ce2f5);
+        }
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.fsm.transition('GROOMING');
+        }
+      },
+      onExit: (cat) => {
+        cat.drinkProp = null;
+        cat.drinkTarget = null;
+        cat.activePropId = null;
+        cat.drinkArrived = false;
+      },
+    });
+
+    // 37. LITTER_USE (Dig -> Sniff -> Dig -> Explosive post-litter ZOOMIES!)
+    fsm.register('LITTER_USE', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.litterArrived = false;
+        cat.litterStage = 0;
+        cat.propActionTimer = 0.2;
+        cat.stateTargetDuration = 4.0;
+        if (!cat.litterProp) {
+          const props = cat.ctx?.interactiveProps ?? [];
+          cat.litterProp = props.find((p) => p.interactionType === 'litter') ?? null;
+        }
+        if (!cat.litterProp) {
+          cat.fsm.transition('ZOOMIES');
+        } else {
+          cat.activePropId = cat.litterProp.id;
+        }
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        const prop = cat.litterProp;
+        if (!prop) {
+          cat.fsm.transition('IDLE');
+          return;
+        }
+        const pt = prop.interactPoint ?? { x: prop.x, y: prop.y };
+        if (!cat.litterArrived) {
+          const d = cat.steerTowards(pt, 108, dt, 6.5);
+          if (d <= 26 || stateTime > 4.0) {
+            cat.litterArrived = true;
+            cat.ctx?.onPropInteract?.(prop.id, cat);
+          }
+          return;
+        }
+
+        cat.dampVelocity(dt, 0.72);
+        cat.propActionTimer -= dt;
+        const elapsed = stateTime;
+        if (cat.propActionTimer <= 0) {
+          cat.propActionTimer = 0.35;
+          if (elapsed < 1.3 || elapsed > 2.3) {
+            cat.ctx?.particles?.spawnDustPuff(prop.x, prop.y, 0, -10);
+          } else {
+            cat.headAngle = cat.heading + Math.sin(stateTime * 12) * 0.2;
+          }
+        }
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.fsm.transition('ZOOMIES', true);
+        }
+      },
+      onExit: (cat) => {
+        cat.litterProp = null;
+        cat.activePropId = null;
+        cat.litterArrived = false;
+      },
+    });
+
+    // 38. CUCUMBER_SCARE (Massive 78px vertical panic leap!)
+    fsm.register('CUCUMBER_SCARE', {
+      onEnter: (cat) => {
+        const origin = cat.startleFrom ?? { x: cat.body.x - 30, y: cat.body.y };
+        const away = Math.atan2(cat.body.y - origin.y, cat.body.x - origin.x);
+        cat.heading = away;
+        cat.headAngle = away;
+        cat.body.vx = Math.cos(away) * 480;
+        cat.body.vy = Math.sin(away) * 480;
+        cat.squashX = 0.8;
+        cat.squashY = 1.28;
+        cat.mood = 'startled';
+        cat.earPose = 'flat_back';
+        cat.emitSound('startle');
+        cat.ctx?.particles?.spawnStartleBurst(cat.body.x, cat.body.y);
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        const leapDur = 0.62;
+        if (stateTime < leapDur) {
+          const u = stateTime / leapDur;
+          cat.zHeight = CUCUMBER_SCARE_PEAK_Z_PX * 4 * u * (1 - u);
+        } else {
+          cat.zHeight = 0;
+          cat.dampVelocity(dt, 0.88);
+          cat.headAngle = cat.heading + Math.sin(stateTime * 16) * 0.4;
+        }
+        if (stateTime >= 1.15) {
+          cat.zHeight = 0;
+          cat.mood = 'content';
+          cat.earPose = 'normal';
+          cat.emitBellIfWearing();
+          cat.fsm.transition('IDLE');
+        }
+      },
+      onExit: (cat) => {
+        cat.zHeight = 0;
+        cat.earPose = 'normal';
+      },
+    });
+
+    // 39. CARRY_GIFT (Carries mouse/fish toy to screen edge as a gift with proud trill!)
+    fsm.register('CARRY_GIFT', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.mood = 'affectionate';
+        cat.giftPickedUp = false;
+        cat.giftToy = cat.findGiftToy();
+        const bounds = cat.ctx?.physics?.getBounds() ?? { width: 1280, height: 720 };
+        cat.giftEdgeTarget = {
+          x: cat.body.x < bounds.width * 0.5 ? 54 : bounds.width - 54,
+          y: clamp(cat.body.y, 70, bounds.height - 70),
+        };
+        if (!cat.giftToy) {
+          cat.giftPickedUp = true; // Virtual gift pride strut
+        }
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        if (!cat.giftPickedUp && cat.giftToy) {
+          const d = cat.steerTowards(cat.giftToy, 118, dt, 7.5);
+          if (d <= cat.body.radius + cat.giftToy.radius + 10 || stateTime > 3.0) {
+            cat.giftPickedUp = true;
+            const mx = cat.spine.head.x + Math.cos(cat.headAngle) * 10;
+            const my = cat.spine.head.y + Math.sin(cat.headAngle) * 10;
+            cat.ctx?.onCarryToy?.(cat.giftToy.id, cat.id, mx, my, cat.headAngle);
+            cat.emitSound('trill');
+          }
+          return;
+        }
+        if (cat.giftToy && cat.giftPickedUp) {
+          const mx = cat.spine.head.x + Math.cos(cat.headAngle) * 10;
+          const my = cat.spine.head.y + Math.sin(cat.headAngle) * 10;
+          cat.ctx?.onCarryToy?.(cat.giftToy.id, cat.id, mx, my, cat.headAngle);
+        }
+        if (cat.giftEdgeTarget) {
+          const d = cat.steerTowards(cat.giftEdgeTarget, 108, dt, 6.5);
+          if (d <= 28 || stateTime > 6.5) {
+            if (cat.giftToy) {
+              const dropX = cat.spine.head.x + Math.cos(cat.headAngle) * 12;
+              const dropY = cat.spine.head.y + Math.sin(cat.headAngle) * 12;
+              cat.ctx?.onCarryToy?.(cat.giftToy.id, null, dropX, dropY, cat.headAngle);
+            }
+            cat.emitSound('trill');
+            cat.brain.recordInteraction('gift');
+            cat.ctx?.particles?.spawnHeartBurst(cat.body.x, cat.body.y - 12, 3);
+            cat.fsm.transition('MEERKAT_PEEK');
+          }
+        } else {
+          cat.fsm.transition('IDLE');
+        }
+      },
+      onExit: (cat) => {
+        if (cat.giftToy && cat.giftPickedUp) {
+          cat.ctx?.onCarryToy?.(cat.giftToy.id, null);
+        }
+        cat.giftToy = null;
+        cat.giftEdgeTarget = null;
+        cat.giftPickedUp = false;
+      },
+    });
+
+    // 40. HAIRBALL (Rare funny rhythmic heave + fading fuzzball puff!)
+    fsm.register('HAIRBALL', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.body.vx = 0;
+        cat.body.vy = 0;
+        cat.hairballHeaves = 0;
+        cat.hairballTimer = 0.45;
+        cat.stateTargetDuration = 2.4;
+        cat.earPose = 'airplane';
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        cat.dampVelocity(dt, 0.7);
+        cat.hairballTimer -= dt;
+        if (cat.hairballTimer <= 0 && cat.hairballHeaves < 3) {
+          cat.hairballHeaves++;
+          cat.hairballTimer = 0.52;
+          cat.squashX = 0.82;
+          cat.squashY = 1.22;
+          if (cat.hairballHeaves === 3) {
+            cat.emitSound('sneeze');
+            const outX = cat.spine.head.x + Math.cos(cat.headAngle) * 14;
+            const outY = cat.spine.head.y + Math.sin(cat.headAngle) * 14;
+            cat.ctx?.particles?.spawnHairballPuff(outX, outY);
+          }
+        }
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.earPose = 'normal';
+          cat.fsm.transition('IDLE');
+        }
+      },
+      onExit: (cat) => {
+        cat.earPose = 'normal';
+      },
+    });
+
+    // 41. IGNORE_USER (Flicks ear and deliberately walks the other way)
+    fsm.register('IGNORE_USER', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.mood = 'irritated';
+        cat.earTwitchRight = 0.35;
+        cat.stateTargetDuration = cat.randRange(1.8, 2.8);
+        const away = cat.ctx?.cursorPos
+          ? Math.atan2(cat.body.y - cat.ctx.cursorPos.y, cat.body.x - cat.ctx.cursorPos.x)
+          : cat.heading + Math.PI;
+        cat.ignoreAwayAngle = normalizeAngle(away + cat.randRange(-0.35, 0.35));
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        const steer = cat.computeObstacleAvoidanceAngle(cat.ignoreAwayAngle);
+        cat.heading = lerpAngle(cat.heading, steer, dt * 6);
+        cat.headAngle = lerpAngle(cat.headAngle, cat.heading, dt * 8);
+        const speed = 78 * cat.breedProfile.locomotion.walkSpeedMultiplier;
+        cat.body.vx += Math.cos(cat.heading) * speed * 5 * dt;
+        cat.body.vy += Math.sin(cat.heading) * speed * 5 * dt;
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.fsm.transition('LOAFING');
+        }
+      },
+    });
+
+    // 42. TASKBAR_WALK (Walks along taskbar ledge or open window title bars, peeks over edge!)
+    fsm.register('TASKBAR_WALK', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.mood = 'curious';
+        cat.taskbarDir = cat.nextRand() < 0.5 ? 1 : -1;
+        cat.taskbarPeekTimer = cat.randRange(1.2, 2.2);
+        cat.stateTargetDuration = cat.randRange(4.0, 6.8);
+        const ledges = cat.ctx?.windowLedges;
+        if (ledges?.windowTopLedges && ledges.windowTopLedges.length > 0 && cat.nextRand() < 0.65) {
+          cat.taskbarLedge = ledges.windowTopLedges[Math.floor(cat.nextRand() * ledges.windowTopLedges.length)];
+        } else if (ledges?.taskbarRect) {
+          cat.taskbarLedge = ledges.taskbarRect;
+        } else {
+          const b = cat.ctx?.physics?.getBounds() ?? { width: 1280, height: 720 };
+          cat.taskbarLedge = { id: -50, x: 40, y: b.height - 44, width: b.width - 80, height: 40, label: 'Taskbar' };
+        }
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        if (cat.resolveLaserTarget()) {
+          cat.fsm.transition('STALK');
+          return;
+        }
+        const ledge = cat.taskbarLedge;
+        if (!ledge) {
+          cat.fsm.transition('IDLE');
+          return;
+        }
+        const walkY = clamp(ledge.y - 6, 36, (cat.ctx?.physics?.getBounds().height ?? 720) - 24);
+        const minX = ledge.x + 22;
+        const maxX = Math.max(minX + 20, ledge.x + ledge.width - 22);
+
+        cat.taskbarPeekTimer -= dt;
+        if (cat.taskbarPeekTimer <= 0 && cat.taskbarPeekTimer > -1.0) {
+          // Pause to peek down over the edge and dangle paw!
+          cat.dampVelocity(dt, 0.72);
+          cat.headAngle = lerpAngle(cat.headAngle, Math.PI * 0.5, dt * 7);
+          if (Math.abs(cat.taskbarPeekTimer + 0.5) < dt * 1.5) {
+            cat.ctx?.particles?.spawnPawTap(cat.body.x, walkY + 8);
+          }
+          return;
+        }
+        if (cat.taskbarPeekTimer <= -1.0) {
+          cat.taskbarPeekTimer = cat.randRange(1.4, 2.4);
+        }
+
+        if (cat.body.x <= minX) cat.taskbarDir = 1;
+        else if (cat.body.x >= maxX) cat.taskbarDir = -1;
+
+        const targetX = clamp(cat.body.x + cat.taskbarDir * 80, minX, maxX);
+        cat.steerTowards({ x: targetX, y: walkY }, 86, dt, 6.5);
+
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.fsm.transition('WANDER');
+        }
+      },
+      onExit: (cat) => {
+        cat.taskbarLedge = null;
+      },
+    });
+
+    // 43. PAW_TEST (Hesitant single-paw tap before stepping onto water or new toy)
+    fsm.register('PAW_TEST', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.mood = 'curious';
+        cat.pawTestArrived = false;
+        cat.pawTestTaps = 0;
+        cat.pawTestTimer = 0.25;
+        cat.stateTargetDuration = 2.8;
+        if (!cat.pawTestTarget) {
+          const toy = cat.findNearestToy(260);
+          if (toy) {
+            cat.pawTestTarget = { x: toy.x, y: toy.y };
+          } else {
+            const water = (cat.ctx?.interactiveProps ?? []).find(
+              (p) => p.interactionType === 'drink' || p.interactionType === 'water',
+            );
+            cat.pawTestTarget = water
+              ? cat.pickDrinkPointForProp(water)
+              : { x: cat.body.x + Math.cos(cat.heading) * 70, y: cat.body.y + Math.sin(cat.heading) * 70 };
+          }
+        }
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        if (!cat.pawTestTarget) {
+          cat.fsm.transition('IDLE');
+          return;
+        }
+        if (!cat.pawTestArrived) {
+          const d = cat.steerTowards(cat.pawTestTarget, 82, dt, 6);
+          if (d <= 36 || stateTime > 1.8) {
+            cat.pawTestArrived = true;
+          }
+          return;
+        }
+        cat.dampVelocity(dt, 0.72);
+        cat.pawTestTimer -= dt;
+        if (cat.pawTestTimer <= 0 && cat.pawTestTaps < 2) {
+          cat.pawTestTaps++;
+          cat.pawTestTimer = 0.45;
+          cat.squashX = 1.08;
+          cat.squashY = 0.93;
+          cat.ctx?.particles?.spawnPawTap(
+            cat.spine.head.x + Math.cos(cat.heading) * 14,
+            cat.spine.head.y + Math.sin(cat.heading) * 14,
+          );
+        }
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.fsm.transition('IDLE');
+        }
+      },
+      onExit: (cat) => {
+        cat.pawTestTarget = null;
+      },
+    });
+
+    // 44. OVERSTIMULATED (Irritated tail flick + airplane ears + walks away)
+    fsm.register('OVERSTIMULATED', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.mood = 'irritated';
+        cat.earPose = 'airplane';
+        cat.stateTargetDuration = cat.randRange(2.0, 3.0);
+        const away = cat.ctx?.cursorPos
+          ? Math.atan2(cat.body.y - cat.ctx.cursorPos.y, cat.body.x - cat.ctx.cursorPos.x)
+          : cat.heading + Math.PI * 0.85;
+        cat.overstimulatedDir = normalizeAngle(away);
+        cat.emitSound('chirp');
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        const steer = cat.computeObstacleAvoidanceAngle(cat.overstimulatedDir);
+        cat.heading = lerpAngle(cat.heading, steer, dt * 7);
+        cat.headAngle = lerpAngle(cat.headAngle, cat.heading, dt * 8);
+        const speed = 110 * cat.breedProfile.locomotion.walkSpeedMultiplier;
+        cat.body.vx += Math.cos(cat.heading) * speed * 5.2 * dt;
+        cat.body.vy += Math.sin(cat.heading) * speed * 5.2 * dt;
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.earPose = 'normal';
+          cat.mood = 'content';
+          cat.fsm.transition('GROOMING');
+        }
+      },
+      onExit: (cat) => {
+        cat.earPose = 'normal';
+      },
+    });
+
+    // 45. PAPER_BAG_AMBUSH (Dives into paper bag/tunnel & lunges out playfully!)
+    fsm.register('PAPER_BAG_AMBUSH', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.mood = 'hunting';
+        cat.bagEntered = false;
+        cat.bagLunged = false;
+        cat.stateTargetDuration = 3.6;
+        if (!cat.bagToy && !cat.bagProp) {
+          cat.bagToy = (cat.ctx?.toys ?? []).find((t) => t.active && t.kind === 'paper_bag') ?? null;
+          if (!cat.bagToy) {
+            cat.bagProp =
+              (cat.ctx?.interactiveProps ?? []).find((p) => p.interactionType === 'ambush') ?? null;
+          }
+        }
+        if (cat.bagToy) cat.bagTarget = { x: cat.bagToy.x, y: cat.bagToy.y };
+        else if (cat.bagProp) cat.bagTarget = { x: cat.bagProp.x, y: cat.bagProp.y };
+        else cat.fsm.transition('IDLE');
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        if (!cat.bagTarget) {
+          cat.fsm.transition('IDLE');
+          return;
+        }
+        if (!cat.bagEntered) {
+          const d = cat.steerTowards(cat.bagTarget, 145, dt, 8);
+          if (d <= 22 || stateTime > 2.2) {
+            cat.bagEntered = true;
+            cat.emitSound('crinkle');
+            cat.squashX = 0.85;
+            cat.squashY = 1.15;
+            cat.ctx?.particles?.spawnDustPuff(cat.bagTarget.x, cat.bagTarget.y, 0, -10);
+          }
+          return;
+        }
+        if (!cat.bagLunged && stateTime < 2.6) {
+          cat.dampVelocity(dt, 0.65);
+          cat.headAngle = cat.heading + Math.sin(stateTime * 10) * 0.22;
+          return;
+        }
+        if (!cat.bagLunged) {
+          cat.bagLunged = true;
+          cat.zHeight = 24;
+          cat.body.vx = Math.cos(cat.heading) * 320;
+          cat.body.vy = Math.sin(cat.heading) * 320;
+          cat.emitSound('crinkle');
+          cat.ctx?.particles?.spawnConfettiBurst(cat.body.x, cat.body.y, 4);
+        }
+        const u = clamp((stateTime - 2.6) / 0.45, 0, 1);
+        cat.zHeight = 24 * 4 * u * (1 - u);
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.zHeight = 0;
+          cat.fsm.transition('IDLE');
+        }
+      },
+      onExit: (cat) => {
+        cat.zHeight = 0;
+        cat.bagToy = null;
+        cat.bagProp = null;
+        cat.bagTarget = null;
+      },
+    });
+
+    // 46. PLAY_TOY (Interacts authentically with all 11 ToyManager toys!)
+    fsm.register('PLAY_TOY', {
+      onEnter: (cat) => {
+        cat.zHeight = 0;
+        cat.mood = 'playful';
+        cat.toyBatCooldown = 0.1;
+        cat.stateTargetDuration = cat.randRange(3.2, 5.5);
+        if (!cat.targetToy) {
+          cat.targetToy = cat.findNearestToy(420);
+        }
+        if (!cat.targetToy) {
+          cat.fsm.transition('IDLE');
+        }
+      },
+      onUpdate: (cat, dt, stateTime) => {
+        if (cat.resolveLaserTarget()) {
+          cat.fsm.transition('STALK');
+          return;
+        }
+        const liveToy = cat.resolveLiveToy();
+        if (!liveToy || !liveToy.active) {
+          cat.fsm.transition('IDLE');
+          return;
+        }
+
+        if (liveToy.kind === 'cucumber') {
+          cat.triggerCucumberScare({ x: liveToy.x, y: liveToy.y });
+          return;
+        }
+        if (liveToy.kind === 'paper_bag') {
+          cat.bagToy = liveToy;
+          cat.fsm.transition('PAPER_BAG_AMBUSH');
+          return;
+        }
+
+        const d = cat.steerTowards(liveToy, 152, dt, 8.2);
+
+        if (liveToy.kind === 'taped_square') {
+          if (d <= 16) {
+            cat.dampVelocity(dt, 0.65);
+            cat.fsm.transition('LOAFING');
+          }
+          return;
+        }
+
+        if (liveToy.kind === 'bubbles') {
+          if (d <= cat.body.radius + liveToy.radius + 18) {
+            cat.zHeight = 28;
+            cat.ctx?.onPopBubble?.(liveToy.id, cat.id);
+            cat.ctx?.particles?.spawnBubblePop(liveToy.x, liveToy.y, 5);
+            cat.emitSound('bubble_pop');
+            cat.brain.recordInteraction('play', 0.6);
+            cat.fsm.transition('IDLE');
+          }
+          return;
+        }
+
+        const reach = cat.body.radius + liveToy.radius + 12;
+        if (d <= reach && cat.toyBatCooldown <= 0) {
+          cat.toyBatCooldown = 0.65;
+          const batAngle = Math.atan2(liveToy.y - cat.body.y, liveToy.x - cat.body.x) + cat.randRange(-0.4, 0.4);
+          const batSpeed =
+            liveToy.kind === 'crinkle_ball' || liveToy.kind === 'ping_pong' || liveToy.kind === 'hair_tie'
+              ? 360
+              : 240;
+          cat.ctx?.onBatToy?.(
+            liveToy.id,
+            Math.cos(batAngle) * batSpeed,
+            Math.sin(batAngle) * batSpeed,
+            cat.id,
+          );
+          cat.brain.recordInteraction('play', 0.45);
+          cat.squashX = 1.14;
+          cat.squashY = 0.88;
+
+          if (liveToy.isCatnip || liveToy.kind === 'mouse_toy') {
+            cat.ctx?.particles?.spawnCatnipSparkles(liveToy.x, liveToy.y, 5);
+            cat.emitSound('chirp');
+          } else if (liveToy.kind === 'crinkle_ball') {
+            cat.ctx?.particles?.spawnGroomSparkle(liveToy.x, liveToy.y);
+            cat.emitSound('crinkle');
+          } else {
+            cat.ctx?.particles?.spawnDustPuff(liveToy.x, liveToy.y, 0, -10);
+            cat.emitSound('chirp');
+          }
+        }
+
+        if (stateTime >= cat.stateTargetDuration) {
+          cat.fsm.transition(cat.nextRand() < 0.35 && liveToy.isCatnip ? 'ROLL_BELLY' : 'IDLE');
+        }
+      },
+      onExit: (cat) => {
+        cat.zHeight = 0;
+        cat.targetToy = null;
+      },
+    });
+
     return fsm;
   }
 
@@ -2787,6 +4394,19 @@ export class CatEntity extends Container {
   // ============================================================================
 
   private checkImmediateStimuli(): boolean {
+    // 1. Cucumber scare check (sneaky cucumber placed near/behind unsuspecting cat!)
+    if (this.cucumberCooldown <= 0 && this.ctx?.toys) {
+      for (const toy of this.ctx.toys) {
+        if (!toy.active || (toy.kind !== 'cucumber' && !toy.isScary)) continue;
+        const d = Math.hypot(toy.x - this.body.x, toy.y - this.body.y);
+        if (d <= 118) {
+          this.triggerCucumberScare({ x: toy.x, y: toy.y });
+          return true;
+        }
+      }
+    }
+
+    // 2. Laser pointer (respects realistic laser boredom!)
     const laser = this.resolveLaserTarget();
     if (laser) {
       this.pendingIconPlay = null;
@@ -2795,6 +4415,7 @@ export class CatEntity extends Container {
       return true;
     }
 
+    // 3. Dropped treats
     const treat = this.findNearestTreat(420);
     if (treat) {
       this.pendingIconPlay = null;
@@ -2803,12 +4424,14 @@ export class CatEntity extends Container {
       return true;
     }
 
+    // 4. File sniff investigation
     if (this.investigatePoint) {
       this.pendingIconPlay = null;
       this.fsm.transition('SNIFF_FILE');
       return true;
     }
 
+    // 5. Rolling yarn ball
     const yarn = this.ctx.yarnBall;
     if (yarn && yarn.isRolling()) {
       const yp = yarn.getPosition();
@@ -2823,45 +4446,45 @@ export class CatEntity extends Container {
     return false;
   }
 
+  private buildBrainContext(): Parameters<CatBrain['chooseNextBehavior']>[0] {
+    const toys = this.ctx?.toys ?? [];
+    const props = this.ctx?.interactiveProps ?? [];
+    const ledges = this.ctx?.windowLedges;
+    return {
+      date: this.ctx?.nowDate,
+      hasWarmSpot: Boolean(this.findBestWarmSpot()),
+      hasToys: toys.some((t) => t.active && !t.isScary),
+      availableToys: toys,
+      availableProps: props,
+      hasCritters: (this.ctx?.ambientCritters?.length ?? 0) > 0,
+      hasWindowLedges: Boolean(
+        ledges && (ledges.taskbarRect || (ledges.windowTopLedges && ledges.windowTopLedges.length > 0)),
+      ),
+      hasPaperBag:
+        toys.some((t) => t.active && t.kind === 'paper_bag') ||
+        props.some((p) => p.interactionType === 'ambush'),
+      hasTapedSquare: toys.some((t) => t.active && t.kind === 'taped_square'),
+      hasLitterBox: props.some((p) => p.interactionType === 'litter'),
+      hasWaterProp: props.some((p) => p.interactionType === 'drink' || p.interactionType === 'water'),
+      hasFoodProp: props.some((p) => p.interactionType === 'treat' || p.interactionType === 'nibble'),
+      hasOtherCats: (this.ctx?.otherCats?.length ?? 0) > 1,
+      hasCursor: Boolean(this.ctx?.cursorPos),
+      isOnBlanketOrRug: this.ctx?.surfaceManager?.isOnRug(this.body.x, this.body.y) ?? false,
+    };
+  }
+
   private chooseNextIdleActivity(): void {
     if (this.trySeekActiveProp()) return;
     if (this.tryStartSocialPlay()) return;
 
     if (this.behaviorCooldown <= 0) {
-      const aff = this.breedProfile.behaviorAffinities;
-      const p = this.personality;
-
-      // Weighted personality-driven selection
-      const weights: Array<{ state: CatStateName; weight: number }> = [
-        { state: 'WANDER', weight: 1.55 + (1 - p.laziness) * 0.9 },
-        { state: 'GROOMING', weight: 0.45 + aff.grooming * 0.85 },
-        { state: 'LOAFING', weight: 0.4 + aff.loafing * 0.95 + p.laziness * 0.55 },
-        { state: 'STRETCHING', weight: 0.32 + p.laziness * 0.25 },
-        { state: 'ROLL_BELLY', weight: 0.24 + p.playfulness * 0.45 },
-        {
-          state: 'MEERKAT_PEEK',
-          weight: 0.22 + aff.meerkatPeek * 0.85 + p.curiosity * 0.45,
-        },
-      ];
-
-      if (this.zoomieCooldown <= 0) {
-        weights.push({
-          state: 'ZOOMIES',
-          weight: 0.15 + aff.zoomies * 0.75 + p.zoomieProneness * 0.65,
-        });
+      const chosen = this.brain.chooseNextBehavior(this.buildBrainContext());
+      if (chosen === 'ZOOMIES' && this.zoomieCooldown > 0) {
+        this.fsm.transition('WANDER');
+        return;
       }
-
-      const warmSpot = this.findBestWarmSpot();
-      if (warmSpot) {
-        weights.push({
-          state: 'SUNBATHE',
-          weight: 0.25 + aff.sunbathing * 0.95 + p.warmthAffinity * 0.85,
-        });
-      }
-
-      const chosen = this.pickWeightedState(weights);
-      if (chosen === 'SUNBATHE' && warmSpot) {
-        this.sunbatheSpot = warmSpot;
+      if (chosen === 'SUNBATHE') {
+        this.sunbatheSpot = this.findBestWarmSpot();
       }
       this.fsm.transition(chosen);
       return;
@@ -2874,46 +4497,15 @@ export class CatEntity extends Container {
     if (this.trySeekActiveProp()) return;
     if (this.tryStartSocialPlay()) return;
 
-    const r = this.nextRand();
-    const aff = this.breedProfile.behaviorAffinities;
-
-    if (this.zoomieCooldown <= 0 && r < 0.08 + this.personality.zoomieProneness * 0.16) {
-      this.fsm.transition('ZOOMIES');
+    const chosen = this.brain.chooseNextBehavior(this.buildBrainContext());
+    if (chosen === 'ZOOMIES' && this.zoomieCooldown > 0) {
+      this.fsm.transition('IDLE');
       return;
     }
-    if (r < 0.25 + aff.loafing * 0.15) {
-      this.fsm.transition('LOAFING');
-      return;
+    if (chosen === 'SUNBATHE') {
+      this.sunbatheSpot = this.findBestWarmSpot();
     }
-    if (r < 0.44 + aff.grooming * 0.14) {
-      this.fsm.transition('GROOMING');
-      return;
-    }
-    if (r < 0.56 + aff.meerkatPeek * 0.14) {
-      this.fsm.transition('MEERKAT_PEEK');
-      return;
-    }
-    const warm = this.findBestWarmSpot();
-    if (warm && r < 0.72 + this.personality.warmthAffinity * 0.18) {
-      this.sunbatheSpot = warm;
-      this.fsm.transition('SUNBATHE');
-      return;
-    }
-    this.fsm.transition('IDLE');
-  }
-
-  private pickWeightedState(
-    entries: ReadonlyArray<{ state: CatStateName; weight: number }>,
-  ): CatStateName {
-    let total = 0;
-    for (const e of entries) total += Math.max(0, e.weight);
-    if (total <= 0) return 'WANDER';
-    let roll = this.nextRand() * total;
-    for (const e of entries) {
-      roll -= Math.max(0, e.weight);
-      if (roll <= 0) return e.state;
-    }
-    return entries[entries.length - 1].state;
+    this.fsm.transition(chosen);
   }
 
   private pickNewWanderGoal(): void {
@@ -2921,7 +4513,6 @@ export class CatEntity extends Container {
     const rug = this.ctx?.surfaceManager?.getRugBounds();
     const margin = 64;
 
-    // 45% explore wide room perimeter/floor, 55% explore distinct spots across rug
     if (rug && this.nextRand() < 0.55) {
       this.wanderGoal = {
         x: clamp(rug.x + this.randRange(0.08, 0.92) * rug.width, margin, bounds.width - margin),
@@ -2957,7 +4548,8 @@ export class CatEntity extends Container {
         ost === 'JUMP_TO_ICON' ||
         ost === 'PERCH_ICON' ||
         ost === 'BONK' ||
-        ost === 'STARTLED'
+        ost === 'STARTLED' ||
+        ost === 'CUCUMBER_SCARE'
       ) {
         continue;
       }
@@ -2975,6 +4567,7 @@ export class CatEntity extends Container {
     this.socialPartner = nearest;
     if (
       partnerState === 'NAP' ||
+      partnerState === 'DEEP_SLEEP' ||
       partnerState === 'LOAFING' ||
       partnerState === 'SUNBATHE' ||
       this.breedProfile.behaviorAffinities.socialCuddle > 0.85
@@ -2982,8 +4575,7 @@ export class CatEntity extends Container {
       this.socialMode = this.nextRand() < 0.55 ? 'cuddle' : 'boop';
     } else {
       const r = this.nextRand();
-      this.socialMode =
-        r < 0.45 ? 'boop' : r < 0.8 ? 'chase' : 'cuddle';
+      this.socialMode = r < 0.45 ? 'boop' : r < 0.8 ? 'chase' : 'cuddle';
     }
 
     this.fsm.transition('SOCIAL_PLAY');
@@ -3001,15 +4593,16 @@ export class CatEntity extends Container {
     for (const prop of this.ctx.interactiveProps) {
       const pt = prop.interactPoint ?? { x: prop.x, y: prop.y };
       const dist = Math.hypot(pt.x - this.body.x, pt.y - this.body.y);
-      // prop.isActive is maintained by InteractivePropWorld (true for lit lamps or active lures)
       const isAttracting = prop.isActive;
       const maxRange = isAttracting ? Math.max(220, prop.attractRadius) : 185;
       if (dist > maxRange) continue;
 
       let affinity = this.breedProfile.behaviorAffinities.propCuriosity;
-      if (prop.interactionType === 'warmth') affinity = this.personality.warmthAffinity;
-      else if (prop.interactionType === 'cozy') affinity = this.breedProfile.behaviorAffinities.loafing;
-      else if (prop.interactionType === 'catnip' || prop.interactionType === 'play') {
+      if (prop.interactionType === 'warmth' || prop.interactionType === 'sunbeam') {
+        affinity = this.personality.warmthAffinity;
+      } else if (prop.interactionType === 'cozy' || prop.interactionType === 'knead') {
+        affinity = this.breedProfile.behaviorAffinities.loafing;
+      } else if (prop.interactionType === 'catnip' || prop.interactionType === 'play') {
         affinity = this.personality.playfulness + 0.3;
       }
 
@@ -3058,7 +4651,6 @@ export class CatEntity extends Container {
       }
     }
 
-    // Fallback: cozy sunlit spot on the rug when not night mode
     if (!this.ctx?.nightMode && this.ctx?.surfaceManager) {
       return this.ctx.surfaceManager.getRandomRugSpot(32);
     }
@@ -3094,6 +4686,50 @@ export class CatEntity extends Container {
       return null;
     }
     return this.targetTreat.remainingBites > 0 ? this.targetTreat : null;
+  }
+
+  private findNearestToy(maxDist: number): ToyEntityState | null {
+    const toys = this.ctx?.toys;
+    if (!toys || toys.length === 0) return null;
+    let best: ToyEntityState | null = null;
+    let bestD = maxDist;
+    for (const t of toys) {
+      if (!t.active || t.isScary || t.kind === 'cucumber') continue;
+      if (t.isCarriedByCatId !== null && t.isCarriedByCatId !== this.id) continue;
+      const d = Math.hypot(t.x - this.body.x, t.y - this.body.y);
+      if (d < bestD) {
+        bestD = d;
+        best = t;
+      }
+    }
+    return best;
+  }
+
+  private findGiftToy(): ToyEntityState | null {
+    const toys = this.ctx?.toys;
+    if (!toys) return null;
+    return (
+      toys.find(
+        (t) =>
+          t.active &&
+          t.isCarriedByCatId === null &&
+          (t.kind === 'mouse_toy' || t.kind === 'fish_toy'),
+      ) ?? null
+    );
+  }
+
+  private resolveLiveToy(): ToyEntityState | null {
+    if (!this.targetToy) return null;
+    const toys = this.ctx?.toys;
+    if (toys) {
+      const live = toys.find((t) => t.id === this.targetToy?.id);
+      if (live) {
+        this.targetToy = live;
+        return live;
+      }
+      return null;
+    }
+    return this.targetToy.active ? this.targetToy : null;
   }
 
   private findNearestCritter(maxDist: number): AmbientCritter | null {
@@ -3163,11 +4799,6 @@ export class CatEntity extends Container {
   // Box Exit Clearance & Obstacle Helpers
   // ============================================================================
 
-  /**
-   * Computes a guaranteed clear landing point strictly OUTSIDE the cardboard box
-   * exterior walls + angled flaps + catRadius + clearance margin, avoiding desktop
-   * icons, scene obstacles, and screen boundaries.
-   */
   private computeBoxExitLanding(
     preferredAngle: number,
     box: CardboardBox | null | undefined,
@@ -3219,7 +4850,6 @@ export class CatEntity extends Container {
           continue;
         }
 
-        // Strict exterior wall clearance check
         let boxClear = Infinity;
         if (boxRect) {
           const bx = clamp(px, boxRect.x, boxRect.x + boxRect.width);
@@ -3262,7 +4892,6 @@ export class CatEntity extends Container {
       return bestFallback;
     }
 
-    // Ultimate fallback: pick direction toward screen center strictly outside box + catRadius + 14
     const bounds = physics?.getBounds() ?? { width: 1280, height: 720 };
     const toCenter = Math.atan2(bounds.height * 0.5 - cy, bounds.width * 0.5 - cx);
     const safeR = box
@@ -3482,6 +5111,7 @@ export class CatEntity extends Container {
   }
 
   private resolveLaserTarget(): LaserTarget | null {
+    if (this.brain.isLaserBored()) return null;
     if (this.ctx.laserTarget) return this.ctx.laserTarget;
     if (this.ctx.laserTargets && this.ctx.laserTargets.length > 0) {
       return assignCatToLaserTarget(this.id, this.ctx.laserTargets);
@@ -3579,54 +5209,61 @@ export class CatEntity extends Container {
   }
 
   // ============================================================================
-  // Spine, Verlet Tail & Breed-Authentic Pose Rendering
+  // Spine, Verlet Tail, Sleep Indicator & Pose Rendering
   // ============================================================================
 
   private updateSpineAndTail(dt: number): void {
     const state = this.fsm.state;
     const speed = Math.hypot(this.body.vx, this.body.vy);
     const isCurled =
-      state === 'NAP' ||
+      this.isSleeping() && this.sleepPose === 'curled' ||
       state === 'IN_BOX' ||
       (state === 'PERCH_ICON' && !this.perchHopDownActive) ||
       (state === 'PETTED' && (this.petInBoxHold || this.petOnIconHold));
     const isLoaf =
       state === 'LOAFING' ||
+      state === 'KNEADING' ||
       (state === 'PROP_INTERACT' && this.propArrived && this.targetProp?.interactionType === 'cozy') ||
       (state === 'SOCIAL_PLAY' && this.socialMode === 'cuddle' && speed < 10);
 
     const loco = this.breedProfile.locomotion;
     const headSpec = this.breedProfile.anatomy.head;
     const tailSpec = this.breedProfile.anatomy.tail;
+    const kittenScale = this.brain.isKitten() ? KITTEN_BODY_SCALE : 1;
 
-    if (speed > 6 && !isCurled && state !== 'WIGGLE' && state !== 'ROLL_BELLY' && state !== 'MEERKAT_PEEK') {
+    if (
+      speed > 6 &&
+      !isCurled &&
+      state !== 'WIGGLE' &&
+      state !== 'POUNCE_WIGGLE' &&
+      state !== 'ROLL_BELLY' &&
+      state !== 'MEERKAT_PEEK'
+    ) {
       const velAngle = Math.atan2(this.body.vy, this.body.vx);
       if (state !== 'BONK') {
         this.heading = lerpAngle(this.heading, velAngle, dt * 8 * loco.turnAgility);
       }
-      // Breed-authentic stride frequency (Munchkin rapid cute patter, Persian slow plush glide!)
       const zoomieBoost = state === 'ZOOMIES' ? 1.55 : 1;
       this.walkPhase +=
         (speed / 26) * dt * Math.PI * loco.strideFrequencyMultiplier * this.strideVariance * zoomieBoost;
     }
 
-    let headLead = isCurled || isLoaf ? headSpec.headLeadCurled : headSpec.headLeadWalk;
+    let headLead = (isCurled || isLoaf ? headSpec.headLeadCurled : headSpec.headLeadWalk) * kittenScale;
     if (state === 'STRETCHING') {
-      headLead += 6.5 * this.stretchFactor;
+      headLead += 6.5 * this.stretchFactor * kittenScale;
     } else if (state === 'MEERKAT_PEEK') {
-      headLead = headSpec.headLeadCurled * 0.72;
+      headLead = headSpec.headLeadCurled * 0.72 * kittenScale;
     } else if (state === 'GROOMING') {
-      headLead = headSpec.headLeadCurled * 1.08;
+      headLead = headSpec.headLeadCurled * 1.08 * kittenScale;
     }
 
     const headX = this.body.x + Math.cos(this.heading) * headLead;
     const headY = this.body.y + Math.sin(this.heading) * headLead;
     this.spine.moveHeadTo(headX, headY, this.heading);
 
-    // 12Hz hip oscillation during WIGGLE
     let hipOffsetX = 0;
     let hipOffsetY = 0;
-    if (state === 'WIGGLE') {
+    if (state === 'WIGGLE' || state === 'POUNCE_WIGGLE') {
       const perpX = -Math.sin(this.heading);
       const perpY = Math.cos(this.heading);
       const osc = Math.sin(this.fsm.stateTime * 12 * Math.PI * 2) * 5.2;
@@ -3640,18 +5277,22 @@ export class CatEntity extends Container {
     };
 
     const tailBaseAngle = this.heading + Math.PI;
-    const tailAnchorX = hipsPos.x + Math.cos(tailBaseAngle) * tailSpec.rootOffset;
-    const tailAnchorY = hipsPos.y + Math.sin(tailBaseAngle) * tailSpec.rootOffset;
+    const tailAnchorX = hipsPos.x + Math.cos(tailBaseAngle) * tailSpec.rootOffset * kittenScale;
+    const tailAnchorY = hipsPos.y + Math.sin(tailBaseAngle) * tailSpec.rootOffset * kittenScale;
     this.tail.setRoot(tailAnchorX, tailAnchorY);
 
     let swayAmp = 0.36;
     let swayFreq = 2.4;
     let restCurve = tailSpec.restCurveBias;
 
-    if (state === 'STALK' || state === 'CHASE_LASER') {
+    if (state === 'STALK' || state === 'CHASE_LASER' || state === 'CHATTER') {
       swayAmp = 0.58;
       swayFreq = 9.5;
       restCurve = 0.06;
+    } else if (state === 'OVERSTIMULATED') {
+      swayAmp = 0.85;
+      swayFreq = 12.0;
+      restCurve = 0.1;
     } else if (state === 'ZOOMIES') {
       swayAmp = 0.45;
       swayFreq = 11.5;
@@ -3660,12 +5301,11 @@ export class CatEntity extends Container {
       swayAmp = 0.5;
       swayFreq = 7.2;
       restCurve = 0.12;
-    } else if (state === 'PETTED' || state === 'ROLL_BELLY') {
+    } else if (state === 'PETTED' || state === 'ROLL_BELLY' || state === 'KNEADING') {
       swayAmp = 0.55;
       swayFreq = 4.4;
       restCurve = 0.34;
     } else if (state === 'STRETCHING') {
-      // Tail sweeps gracefully high/straight behind during a big cat bow-stretch!
       swayAmp = 0.12;
       swayFreq = 2.0;
       restCurve = 0.04;
@@ -3673,15 +5313,23 @@ export class CatEntity extends Container {
       swayAmp = 0.14;
       swayFreq = 1.3;
       restCurve = 0.72;
-    } else if (isCurled || isLoaf) {
-      swayAmp = 0.08;
-      swayFreq = 1.1;
+    } else if (isCurled || isLoaf || this.isSleeping()) {
+      swayAmp = state === 'DREAMING' ? 0.22 : 0.08;
+      swayFreq = state === 'DREAMING' ? 3.2 : 1.1;
       restCurve = 0.72;
-    } else if (state === 'POUNCE' || state === 'STARTLED' || this.isMidJumpArc()) {
+    } else if (
+      state === 'POUNCE' ||
+      state === 'STARTLED' ||
+      state === 'CUCUMBER_SCARE' ||
+      this.isMidJumpArc()
+    ) {
       swayAmp = 0.16;
       swayFreq = 5.5;
       restCurve = 0;
     }
+
+    const catCount = this.getEffectiveCatCount();
+    const constraintIterations = catCount > 60 ? 2 : catCount > 30 ? 3 : 6;
 
     this.tail.update(dt, {
       swayAmp: swayAmp * tailSpec.swayAmpMultiplier,
@@ -3689,7 +5337,7 @@ export class CatEntity extends Container {
       time: this.time + this.noiseOffsetX * 0.1,
       rootAngle: tailBaseAngle,
       restCurve,
-      constraintIterations: 6,
+      constraintIterations,
     });
   }
 
@@ -3699,47 +5347,75 @@ export class CatEntity extends Container {
     earFlatten: number;
     puffFactor: number;
     isCurled: boolean;
+    pupilDilation: number;
+    whiskerTwitch: number;
   } {
     const state = this.fsm.state;
     const isBlinking = this.blinkDuration > 0;
+    const isSleepingCurled = this.isSleeping() && this.sleepPose === 'curled';
     const isCurled =
-      state === 'NAP' ||
+      isSleepingCurled ||
       state === 'IN_BOX' ||
       (state === 'PERCH_ICON' && !this.perchHopDownActive) ||
       (state === 'PETTED' && (this.petInBoxHold || this.petOnIconHold));
 
     let poseMode: CatPoseMode = 'normal';
     if (isCurled) poseMode = 'curled';
+    else if (this.isSleeping() && this.sleepPose === 'belly_up_sleep') poseMode = 'belly_up_sleep';
+    else if (this.isSleeping() && this.sleepPose === 'sprawled') poseMode = 'sunbathe';
     else if (state === 'LOAFING') poseMode = 'loaf';
+    else if (state === 'SLOW_BLINK') poseMode = 'slow_blink';
+    else if (state === 'KNEADING') poseMode = 'kneading';
     else if (state === 'GROOMING') poseMode = 'groom';
-    else if (state === 'STRETCHING') poseMode = 'stretch';
+    else if (state === 'STRETCHING') poseMode = this.stretchFactor > 0.35 ? 'stretch_yawn' : 'stretch';
+    else if (state === 'FLEHMEN') poseMode = 'flehmen';
+    else if (state === 'CHATTER') poseMode = 'chatter';
+    else if (state === 'WIGGLE' || state === 'POUNCE_WIGGLE') poseMode = 'butt_wiggle';
+    else if (state === 'CARRY_GIFT' && this.giftPickedUp) poseMode = 'carrying_toy';
     else if (state === 'ROLL_BELLY') poseMode = 'roll_belly';
-    else if (state === 'MEERKAT_PEEK') poseMode = 'meerkat';
+    else if (state === 'MEERKAT_PEEK' || state === 'STARE_VOID') poseMode = 'meerkat';
     else if (state === 'SUNBATHE') poseMode = this.sunbatheArrived ? 'sunbathe' : 'normal';
     else if (state === 'ZOOMIES') poseMode = 'zoomies';
     else if (state === 'STALK' || state === 'CHASE_LASER') poseMode = 'stalk';
-    else if (state === 'POUNCE' || state === 'STARTLED' || this.isMidJumpArc()) poseMode = 'pounce';
-    else if (state === 'SCRATCH_ICON') poseMode = 'scratch';
+    else if (
+      state === 'POUNCE' ||
+      state === 'STARTLED' ||
+      state === 'CUCUMBER_SCARE' ||
+      this.isMidJumpArc()
+    ) {
+      poseMode = 'pounce';
+    } else if (state === 'SCRATCH_ICON' || state === 'PAW_TEST') poseMode = 'scratch';
+    else if (state === 'DRINKING' && this.drinkArrived) poseMode = 'drinking';
     else if (state === 'EATING_TREAT') poseMode = this.treatArrived ? 'eating' : 'normal';
-    else if (state === 'SOCIAL_PLAY' && this.socialMode === 'cuddle' && Math.hypot(this.body.vx, this.body.vy) < 10) {
+    else if (
+      state === 'SOCIAL_PLAY' &&
+      this.socialMode === 'cuddle' &&
+      Math.hypot(this.body.vx, this.body.vy) < 10
+    ) {
       poseMode = 'loaf';
     } else if (state === 'PROP_INTERACT' && this.propArrived && this.targetProp) {
       const t = this.targetProp.interactionType;
       if (t === 'scratch' || t === 'water' || t === 'play') poseMode = 'scratch';
       else if (t === 'cozy') poseMode = 'loaf';
+      else if (t === 'knead') poseMode = 'kneading';
       else if (t === 'catnip') poseMode = 'roll_belly';
-      else if (t === 'treat') poseMode = 'eating';
-      else if (t === 'warmth') poseMode = 'sunbathe';
+      else if (t === 'drink') poseMode = 'drinking';
+      else if (t === 'treat' || t === 'nibble') poseMode = 'eating';
+      else if (t === 'warmth' || t === 'sunbeam') poseMode = 'sunbathe';
     }
 
     let eyeExpression: CatEyeExpression = 'normal';
     if (state === 'BONK') eyeExpression = 'dizzy';
-    else if (state === 'NAP' || isBlinking) eyeExpression = 'closed';
+    else if (state === 'SLOW_BLINK') eyeExpression = 'slow_blink';
+    else if (state === 'STARTLED' || state === 'CUCUMBER_SCARE') eyeExpression = 'wide_startled';
+    else if (this.isSleeping() || isBlinking) eyeExpression = 'closed';
     else if (
       state === 'PETTED' ||
       state === 'ROLL_BELLY' ||
       state === 'STRETCHING' ||
       state === 'GROOMING' ||
+      state === 'KNEADING' ||
+      state === 'HEAD_BUNT' ||
       (state === 'SOCIAL_PLAY' && this.socialMode === 'boop' && this.socialHeartEmitted)
     ) {
       eyeExpression = 'happy';
@@ -3753,59 +5429,136 @@ export class CatEntity extends Container {
       state === 'STALK' ||
       state === 'CHASE_LASER' ||
       state === 'WIGGLE' ||
+      state === 'POUNCE_WIGGLE' ||
       state === 'POUNCE' ||
-      state === 'STARTLED' ||
       state === 'ZOOMIES' ||
       state === 'MEERKAT_PEEK' ||
+      state === 'STARE_VOID' ||
+      state === 'CHATTER' ||
+      state === 'FLEHMEN' ||
       this.isMidJumpArc()
     ) {
       eyeExpression = 'dilated';
     }
 
     let earFlatten = 0;
-    if (state === 'BONK' || state === 'STARTLED') earFlatten = -0.36;
-    else if (state === 'STALK' || state === 'CHASE_LASER' || state === 'ZOOMIES') earFlatten = -0.26;
-    else if (state === 'MEERKAT_PEEK' || state === 'SNIFF_FILE' || state === 'EATING_TREAT') {
-      earFlatten = 0.2;
+    if (this.earPose === 'flat_back' || state === 'BONK' || state === 'STARTLED' || state === 'CUCUMBER_SCARE') {
+      earFlatten = -0.42;
+    } else if (this.earPose === 'airplane' || state === 'OVERSTIMULATED' || state === 'HAIRBALL') {
+      earFlatten = -0.3;
+    } else if (state === 'STALK' || state === 'CHASE_LASER' || state === 'ZOOMIES') {
+      earFlatten = -0.26;
+    } else if (
+      this.earPose === 'forward' ||
+      state === 'MEERKAT_PEEK' ||
+      state === 'SNIFF_FILE' ||
+      state === 'EATING_TREAT' ||
+      state === 'CHATTER' ||
+      state === 'STARE_VOID'
+    ) {
+      earFlatten = 0.22;
     }
 
     let puffFactor = 0;
-    if (state === 'ZOOMIES') puffFactor = 0.92;
-    else if (state === 'STARTLED') puffFactor = 1.0;
+    if (state === 'STARTLED' || state === 'CUCUMBER_SCARE') puffFactor = 1.0;
+    else if (state === 'ZOOMIES') puffFactor = 0.92;
+    else if (state === 'OVERSTIMULATED') puffFactor = 0.72;
     else if (state === 'POUNCE' || this.isMidJumpArc()) puffFactor = 0.35;
 
-    return { poseMode, eyeExpression, earFlatten, puffFactor, isCurled };
+    const isExcited =
+      eyeExpression === 'dilated' || eyeExpression === 'wide_startled';
+    const pupilDilation = isExcited
+      ? 0.9
+      : this.ctx?.nightMode
+        ? 0.82
+        : poseMode === 'sunbathe'
+          ? 0.22
+          : 0.48;
+
+    const whiskerTwitch =
+      state === 'CHATTER' || state === 'DREAMING' || state === 'SNIFF_FILE'
+        ? Math.sin(this.time * 26)
+        : 0;
+
+    return {
+      poseMode,
+      eyeExpression,
+      earFlatten,
+      puffFactor,
+      isCurled,
+      pupilDilation,
+      whiskerTwitch,
+    };
+  }
+
+  private updateSleepTextTransform(headPos?: Vec2): void {
+    if (!this.isSleeping()) {
+      this.sleepText.visible = false;
+      return;
+    }
+    this.sleepText.visible = true;
+    const hp = headPos ?? this.spine.head;
+    const wave = Math.sin(this.time * 2.2 + this.paceModPhase);
+    const floatY = -19 - Math.abs(wave) * 7;
+    this.sleepText.position.set(hp.x + 8, hp.y + floatY);
+    this.sleepText.scale.set((0.92 + wave * 0.08) * (this.brain.isKitten() ? 0.88 : 1));
+    this.sleepText.alpha = 0.78 + wave * 0.2;
+    this.sleepText.rotation = wave * 0.08;
   }
 
   private renderCat(): void {
     const state = this.fsm.state;
-    const { poseMode, eyeExpression, earFlatten, puffFactor, isCurled } = this.resolveVisualPose();
+    const {
+      poseMode,
+      eyeExpression,
+      earFlatten,
+      puffFactor,
+      isCurled,
+      pupilDilation,
+      whiskerTwitch,
+    } = this.resolveVisualPose();
     const speed = Math.hypot(this.body.vx, this.body.vy);
+    const cust = this.brain.getCustomization();
+    const isKitten = cust.isKitten;
+    const nearWarm = this.isNearWarmZone();
+    const sunbeamWarmth = nearWarm ? 0.85 : 0.15;
+    const rimLightIntensity = nearWarm ? 0.85 : this.ctx?.nightMode ? 0.25 : 0.45;
 
-    // Subtle organic breathing during calm/resting states
     const isCalm =
       isCurled ||
       poseMode === 'loaf' ||
       poseMode === 'sunbathe' ||
+      this.isSleeping() ||
       state === 'IDLE';
-    const breath = isCalm ? Math.sin(this.time * 2.3 + this.paceModPhase) * 0.026 : 0;
+    const breathFreq = state === 'DEEP_SLEEP' ? 1.45 : 2.3;
+    const breath = isCalm ? Math.sin(this.time * breathFreq + this.paceModPhase) * 0.026 : 0;
 
-    // Adorable gait hop (pronounced on Munchkin's bouncy short-legged patter!)
+    // Gentle purring vibration when petted, kneading, or belly-rolling
+    const isPurring =
+      state === 'PETTED' || state === 'KNEADING' || state === 'ROLL_BELLY';
+    const purrVibeX = isPurring ? Math.sin(this.time * 42) * 0.42 : 0;
+    const purrVibeY = isPurring ? Math.cos(this.time * 48) * 0.32 : 0;
+
     const isStepping =
-      (state === 'WANDER' || state === 'EATING_TREAT' || state === 'SOCIAL_PLAY' || state === 'PROP_INTERACT') &&
+      (state === 'WANDER' ||
+        state === 'EATING_TREAT' ||
+        state === 'SOCIAL_PLAY' ||
+        state === 'PROP_INTERACT' ||
+        state === 'PLAY_TOY' ||
+        state === 'CARRY_GIFT' ||
+        state === 'TASKBAR_WALK') &&
       speed > 16;
     const gaitHopPx = isStepping
       ? Math.abs(Math.sin(this.walkPhase)) * this.breedProfile.locomotion.hopBounceFactor * 7.5
       : 0;
 
-    // 2.5D vertical lift: shadow stays on floor while jumping cat rises unmistakably OVER box flaps/walls!
     const totalElevationPx = this.zHeight + gaitHopPx;
     const zNorm = clamp(totalElevationPx / 48, 0, 1.45);
     const visualLiftY = -totalElevationPx * 0.68;
     const scaleZ = 1 + 0.22 * Math.min(1.25, zNorm);
 
-    const stretchSx = poseMode === 'stretch' ? 1 + 0.14 * this.stretchFactor : 1;
-    const stretchSy = poseMode === 'stretch' ? 1 - 0.08 * this.stretchFactor : 1;
+    const stretchSx = poseMode === 'stretch' || poseMode === 'stretch_yawn' ? 1 + 0.14 * this.stretchFactor : 1;
+    const stretchSy = poseMode === 'stretch' || poseMode === 'stretch_yawn' ? 1 - 0.08 * this.stretchFactor : 1;
     const sx =
       this.squashX *
       scaleZ *
@@ -3822,10 +5575,9 @@ export class CatEntity extends Container {
     const groundHead = this.spine.head;
     const groundTorso = this.spine.torso;
 
-    // 12Hz hip wiggle offset
     let hipWiggleX = 0;
     let hipWiggleY = 0;
-    if (state === 'WIGGLE') {
+    if (state === 'WIGGLE' || state === 'POUNCE_WIGGLE') {
       const osc = Math.sin(this.fsm.stateTime * 12 * Math.PI * 2) * 5.2;
       hipWiggleX = -Math.sin(this.heading) * osc;
       hipWiggleY = Math.cos(this.heading) * osc;
@@ -3835,8 +5587,8 @@ export class CatEntity extends Container {
       y: this.spine.hips.y + hipWiggleY,
     };
 
-    const headPos = { x: groundHead.x, y: groundHead.y + visualLiftY };
-    const torsoPos = { x: groundTorso.x, y: groundTorso.y + visualLiftY };
+    const headPos = { x: groundHead.x + purrVibeX, y: groundHead.y + visualLiftY + purrVibeY };
+    const torsoPos = { x: groundTorso.x + purrVibeX, y: groundTorso.y + visualLiftY + purrVibeY };
     const hipsPos = { x: groundHips.x, y: groundHips.y + visualLiftY };
 
     const torsoDir = this.unitVec(torsoPos, headPos, this.heading);
@@ -3852,16 +5604,21 @@ export class CatEntity extends Container {
       headDir,
       bodyScaleX: sx,
       bodyScaleY: sy,
-      isLoaf: isCurled || poseMode === 'loaf',
+      isLoaf: isCurled || poseMode === 'loaf' || poseMode === 'slow_blink',
       poseMode,
       stretchFactor: this.stretchFactor,
       rollPhase: this.rollPhase,
       groomPhase: this.groomPhase,
+      kneadPhase: this.kneadPhase,
       meerkatFactor: poseMode === 'meerkat' ? 1 : 0,
       time: this.time,
+      isKitten,
+      collarColor: cust.collarColor,
+      hasBell: cust.hasBell,
+      rimLightIntensity,
+      sunbeamWarmth,
     };
 
-    // 1. Grounded drop shadow (stays detached on ground beneath the parabolic jump arc!)
     drawBreedShadow(
       this.shadowGraphics,
       this.breedProfile,
@@ -3871,9 +5628,9 @@ export class CatEntity extends Container {
       clamp(totalElevationPx / 46, 0, 1.3),
       1 + 0.06 * Math.min(1.2, zNorm),
       poseMode,
+      { isKitten },
     );
 
-    // 2. Breed-authentic tail + paws + organic body + markings (lifted by visualLiftY)
     this.bodyGraphics.clear();
     this.pawOverlayGraphics.clear();
 
@@ -3884,8 +5641,18 @@ export class CatEntity extends Container {
     drawBreedTail(this.bodyGraphics, this.breedProfile, this.coatProfile, liftedTailNodes, {
       puffFactor,
       isCurled,
+      isKitten,
+      rimLightIntensity,
+      sunbeamWarmth,
       time: this.time,
     });
+
+    const pawPhase =
+      state === 'KNEADING'
+        ? this.kneadPhase
+        : state === 'DREAMING'
+          ? this.time * 6.5
+          : this.fsm.stateTime;
 
     const pawOptions = {
       poseMode,
@@ -3893,16 +5660,22 @@ export class CatEntity extends Container {
       speed,
       isPounce: poseMode === 'pounce',
       isScratch: poseMode === 'scratch',
-      scratchPhase: this.fsm.stateTime,
+      scratchPhase: pawPhase,
       groomPhase: this.groomPhase,
+      kneadPhase: this.kneadPhase,
       rollPhase: this.rollPhase,
       stretchFactor: this.stretchFactor,
       headPos,
       headAngle: this.headAngle,
+      isKitten,
+      time: this.time,
     };
 
     const pawsOverBody =
-      poseMode === 'roll_belly' || poseMode === 'meerkat' || poseMode === 'groom';
+      poseMode === 'roll_belly' ||
+      poseMode === 'belly_up_sleep' ||
+      poseMode === 'meerkat' ||
+      poseMode === 'groom';
 
     if (!isCurled && !pawsOverBody) {
       drawBreedPaws(this.bodyGraphics, this.breedProfile, this.coatProfile, spinePoints, pawOptions);
@@ -3912,14 +5685,11 @@ export class CatEntity extends Container {
     drawBodyMarkings(this.bodyGraphics, this.coatProfile, spinePoints, this.breedProfile);
 
     if (pawsOverBody) {
-      // Draw belly-roll toe-beans & meerkat dangling paws above torso;
-      // draw grooming paws in pawOverlayGraphics above head so lifted paw wipes cheek/ear!
       const targetPawGfx =
         poseMode === 'groom' ? this.pawOverlayGraphics : this.bodyGraphics;
       drawBreedPaws(targetPawGfx, this.breedProfile, this.coatProfile, spinePoints, pawOptions);
     }
 
-    // 3. Breed-authentic expressive head
     const g = this.headGraphics;
     g.clear();
     g.position.set(headPos.x, headPos.y);
@@ -3928,15 +5698,24 @@ export class CatEntity extends Container {
 
     drawBreedHead(g, this.breedProfile, this.coatProfile, {
       earFlatten,
+      earPose: this.earPose,
       earTwitchLeft: this.earTwitchLeft,
       earTwitchRight: this.earTwitchRight,
       eyeExpression,
+      pupilDilation,
+      whiskerTwitch,
       isCurled,
+      isKitten,
       nightMode: this.ctx?.nightMode ?? false,
+      rimLightIntensity,
+      sunbeamWarmth,
+      carriedToyKind: poseMode === 'carrying_toy' ? (this.giftToy?.kind ?? 'mouse_toy') : null,
       time: this.time,
       poseMode,
       groomPhase: this.groomPhase,
     });
+
+    this.updateSleepTextTransform(headPos);
   }
 
   private unitVec(from: Vec2, to: Vec2, fallbackAngle: number): Vec2 {

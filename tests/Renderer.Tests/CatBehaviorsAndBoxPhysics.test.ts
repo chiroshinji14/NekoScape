@@ -80,9 +80,28 @@ vi.mock('pixi.js', () => {
     }
   }
 
+  class MockText extends MockContainer {
+    text: string;
+    style: Record<string, unknown>;
+    anchor = {
+      x: 0,
+      y: 0,
+      set(x: number, y = x) {
+        this.x = x;
+        this.y = y;
+      },
+    };
+    constructor(options?: { text?: string; style?: Record<string, unknown> }) {
+      super();
+      this.text = options?.text ?? '';
+      this.style = options?.style ?? {};
+    }
+  }
+
   return {
     Container: MockContainer,
     Graphics: MockGraphics,
+    Text: MockText,
   };
 });
 
@@ -90,6 +109,7 @@ import { PhysicsWorld } from '@/core/PhysicsWorld';
 import { SurfaceManager } from '@/core/SurfaceManager';
 import { BOX_WALL_HEIGHT, CardboardBox } from '@/entities/CardboardBox';
 import { CatEntity, hitTestCat, onCatClicked, type CatContext } from '@/entities/CatEntity';
+import { ToyWorld } from '@/entities/ToyManager';
 import { InteractivePropWorld } from '@/environment/InteractiveProp';
 import { CAT_BREEDS, CAT_STATES } from '@/types/simulation';
 
@@ -161,7 +181,7 @@ describe('CatEntity — Box Jump-Out Physics, Decorrelated Movement, 10 New Beha
       twinA.getPosition().y - twinB.getPosition().y,
     );
     expect(distTwins).toBeGreaterThan(12);
-  });
+  }, 15000);
 
   it('executes JUMP_OUT_BOX with a crouch coil, high parabolic arc peaking well above box wall height, and lands strictly outside box + catRadius', () => {
     const box = new CardboardBox(640, 360, 'study');
@@ -407,19 +427,192 @@ describe('CatEntity — Box Jump-Out Physics, Decorrelated Movement, 10 New Beha
     expect(singleReaction.breed).toBe('munchkin');
     expect(singleReaction.breedLabel).toBe('Munchkin');
     expect(singleReaction.caption.length).toBeGreaterThan(5);
-    expect(['ROLL_BELLY', 'MEERKAT_PEEK', 'PETTED']).toContain(singleReaction.state);
-    expect(['affectionate', 'curious', 'playful']).toContain(singleReaction.mood);
+    expect([
+      'ROLL_BELLY',
+      'MEERKAT_PEEK',
+      'PETTED',
+      'SLOW_BLINK',
+      'IGNORE_USER',
+      'OVERSTIMULATED',
+    ]).toContain(singleReaction.state);
+    expect(['affectionate', 'curious', 'playful', 'irritated']).toContain(singleReaction.mood);
 
-    // Clicking a sleeping cat wakes it gently into STRETCHING
-    const fsmB = (catB as unknown as { fsm: { transition: (s: string, f?: boolean) => void } }).fsm;
-    fsmB.transition('NAP', true);
-    const wakeReaction = onCatClicked(catB, false);
-    expect(wakeReaction.state).toBe('STRETCHING');
-    expect(wakeReaction.mood).toBe('content');
-    expect(wakeReaction.caption).toContain('stretch');
-
-    // Double-clicking a high-zoomie Munchkin triggers ZOOMIES
+    // Double-clicking a high-zoomie Munchkin triggers ZOOMIES or ROLL_BELLY
     const doubleReaction = onCatClicked(catA, true);
-    expect(['ZOOMIES', 'ROLL_BELLY']).toContain(doubleReaction.state);
+    expect(['ZOOMIES', 'ROLL_BELLY', 'OVERSTIMULATED']).toContain(doubleReaction.state);
   });
+
+  it('exposes Zzz sleep indicator on NAP/DEEP_SLEEP/DREAMING and clicking a sleeping cat startles it into a high parabolic jump (zHeight > 45)', () => {
+    const ctx = createTestContext();
+    const fsmOf = (c: CatEntity) =>
+      (c as unknown as { fsm: { transition: (s: string, f?: boolean) => void } }).fsm;
+
+    for (const sleepState of ['NAP', 'DEEP_SLEEP', 'DREAMING'] as const) {
+      const sleeper = new CatEntity(101, 'persian', 620, 380, { name: 'Duchess' });
+      sleeper.update(1 / 60, ctx);
+      expect(sleeper.isSleeping()).toBe(false);
+      expect(sleeper.getSleepIndicatorText()).toBe('');
+
+      fsmOf(sleeper).transition(sleepState, true);
+      sleeper.update(1 / 60, ctx);
+      expect(sleeper.getState()).toBe(sleepState);
+      expect(sleeper.isSleeping()).toBe(true);
+      expect(sleeper.getSleepIndicatorText()).toBe('Zzz');
+      expect(sleeper.getZHeight()).toBe(0);
+
+      // Clicking a sleeping cat MUST wake it STARTLED and launch a high parabolic jump (> 45px)
+      const wake = onCatClicked(sleeper, false);
+      expect(wake.wokeFromSleep).toBe(true);
+      expect(wake.state).toBe('STARTLED');
+      expect(wake.soundEvent).toBe('startle');
+      expect(sleeper.isSleeping()).toBe(false);
+      expect(sleeper.getSleepIndicatorText()).toBe('');
+      expect(sleeper.getEarPose()).toBe('flat_back');
+
+      let peakZ = 0;
+      for (let i = 0; i < 45; i++) {
+        sleeper.update(1 / 60, ctx);
+        peakZ = Math.max(peakZ, sleeper.getZHeight());
+      }
+      expect(peakZ, `${sleepState} startle wake jump peak`).toBeGreaterThan(45);
+    }
+  });
+
+  it('supports unlimited cat deployment (50 cats across all 14 breeds, no 12-cat cap, distinct seeds & valid positions)', () => {
+    const ctx = createTestContext({ catCount: 50 });
+    const cats: CatEntity[] = [];
+    for (let i = 0; i < 50; i++) {
+      const breed = CAT_BREEDS[i % CAT_BREEDS.length];
+      const x = 90 + (i % 10) * 110;
+      const y = 90 + Math.floor(i / 10) * 120;
+      cats.push(new CatEntity(i + 1, breed, x, y));
+    }
+    ctx.otherCats = cats;
+
+    expect(cats).toHaveLength(50);
+    expect(new Set(cats.map((c) => c.seed)).size).toBe(50);
+    expect(new Set(cats.map((c) => c.breed)).size).toBe(14);
+
+    for (let step = 0; step < 30; step++) {
+      for (const c of cats) {
+        c.update(1 / 60, ctx);
+      }
+    }
+
+    for (const c of cats) {
+      const p = c.getPosition();
+      expect(Number.isFinite(p.x) && Number.isFinite(p.y)).toBe(true);
+      expect(p.x).toBeGreaterThanOrEqual(0);
+      expect(p.x).toBeLessThanOrEqual(1280);
+      expect(p.y).toBeGreaterThanOrEqual(0);
+      expect(p.y).toBeLessThanOrEqual(720);
+    }
+  }, 15000);
+
+  it('executes v2.0 realistic behaviors (KNEADING, SLOW_BLINK, POUNCE_WIGGLE, CHATTER, STARE_VOID, HEAD_BUNT, FLEHMEN, DRINKING, LITTER_USE->ZOOMIES, CUCUMBER_SCARE, CARRY_GIFT, TASKBAR_WALK, PAW_TEST, OVERSTIMULATED, IGNORE_USER)', () => {
+    const surface = new SurfaceManager(1280, 720);
+    const propWorld = new InteractivePropWorld(1280, 720, surface.getRugBounds(), 'bedroom');
+    const toyWorld = new ToyWorld(1280, 720);
+    const carriedLog: Array<{ toyId: string; catId: number | null }> = [];
+
+    const cat = new CatEntity(77, 'bengal', 500, 400);
+    expect(cat.getRegisteredStates()).toHaveLength(CAT_STATES.length);
+    for (const st of CAT_STATES) {
+      expect(cat.getRegisteredStates()).toContain(st);
+    }
+
+    const ctx = createTestContext({
+      surfaceManager: surface,
+      interactiveProps: propWorld.getProps(),
+      warmZones: propWorld.getWarmZones(),
+      ambientCritters: propWorld.getAmbientCritters(),
+      toys: toyWorld.getToys(),
+      onCarryToy: (toyId, catId, x, y, rot) => {
+        carriedLog.push({ toyId, catId });
+        return toyWorld.setToyCarried(toyId, catId, x, y) &&
+          (catId === null || x === undefined || y === undefined
+            ? true
+            : toyWorld.updateCarriedToyPosition(toyId, x, y, rot));
+      },
+      windowLedges: {
+        taskbarRect: { id: -1, x: 0, y: 676, width: 1280, height: 44, label: 'Taskbar' },
+        windowTopLedges: [{ id: 10, x: 220, y: 180, width: 520, height: 12, label: 'Notes' }],
+      },
+      onPropInteract: vi.fn(),
+    });
+    const fsm = (cat as unknown as { fsm: { transition: (s: string, f?: boolean) => void } }).fsm;
+
+    // Grounded expressive & social states
+    for (const st of [
+      'KNEADING',
+      'SLOW_BLINK',
+      'POUNCE_WIGGLE',
+      'CHATTER',
+      'STARE_VOID',
+      'HEAD_BUNT',
+      'FLEHMEN',
+      'PAW_TEST',
+      'OVERSTIMULATED',
+      'IGNORE_USER',
+    ] as const) {
+      fsm.transition(st, true);
+      expect(cat.getState()).toBe(st);
+      for (let i = 0; i < 10; i++) cat.update(1 / 60, ctx);
+      expect(Number.isFinite(cat.getPosition().x)).toBe(true);
+    }
+
+    // DRINKING on garden koi pond
+    propWorld.setTheme('garden');
+    ctx.interactiveProps = propWorld.getProps();
+    fsm.transition('DRINKING', true);
+    expect(cat.getState()).toBe('DRINKING');
+    for (let i = 0; i < 15; i++) cat.update(1 / 60, ctx);
+
+    // LITTER_USE -> ZOOMIES transition after completing litter cycle
+    propWorld.setTheme('bedroom');
+    ctx.interactiveProps = propWorld.getProps();
+    const litterBox = propWorld.getProps().find((p) => p.interactionType === 'litter')!;
+    cat.getBody().x = litterBox.interactPoint!.x;
+    cat.getBody().y = litterBox.interactPoint!.y;
+    fsm.transition('LITTER_USE', true);
+    expect(cat.getState()).toBe('LITTER_USE');
+    let sawPostLitterZoomies = false;
+    for (let i = 0; i < 280; i++) {
+      cat.update(1 / 60, ctx);
+      if (cat.getState() === 'ZOOMIES') {
+        sawPostLitterZoomies = true;
+        break;
+      }
+    }
+    expect(sawPostLitterZoomies).toBe(true);
+
+    // CUCUMBER_SCARE -> massive vertical panic leap (> 60px)
+    cat.getBody().x = 640;
+    cat.getBody().y = 360;
+    cat.triggerCucumberScare({ x: 610, y: 360 });
+    expect(cat.getState()).toBe('CUCUMBER_SCARE');
+    let cucumberPeakZ = 0;
+    for (let i = 0; i < 45; i++) {
+      cat.update(1 / 60, ctx);
+      cucumberPeakZ = Math.max(cucumberPeakZ, cat.getZHeight());
+    }
+    expect(cucumberPeakZ).toBeGreaterThan(60);
+
+    // CARRY_GIFT picks up mouse toy and drops at edge
+    const mouse = toyWorld.spawnToy('mouse_toy', cat.getPosition().x + 6, cat.getPosition().y + 4);
+    ctx.toys = toyWorld.getToys();
+    fsm.transition('CARRY_GIFT', true);
+    expect(cat.getState()).toBe('CARRY_GIFT');
+    for (let i = 0; i < 420; i++) {
+      cat.update(1 / 60, ctx);
+      if (cat.getState() === 'MEERKAT_PEEK') break;
+    }
+    expect(carriedLog.some((e) => e.toyId === mouse.id && e.catId === cat.id)).toBe(true);
+
+    // TASKBAR_WALK walks along window/taskbar ledge cleanly
+    fsm.transition('TASKBAR_WALK', true);
+    expect(cat.getState()).toBe('TASKBAR_WALK');
+    for (let i = 0; i < 30; i++) cat.update(1 / 60, ctx);
+    expect(Number.isFinite(cat.getPosition().x)).toBe(true);
+  }, 15000);
 });

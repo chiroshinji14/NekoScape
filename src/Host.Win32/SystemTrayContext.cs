@@ -19,6 +19,7 @@ public sealed class SystemTrayContext : ApplicationContext
     private readonly DesktopClickDetector _desktopClickDetector = new();
     private readonly DesktopWatcher _desktopWatcher;
     private readonly OcclusionMonitor _occlusionMonitor;
+    private readonly WindowLedgeTracker _windowLedgeTracker = new();
     private readonly System.Windows.Forms.Timer _iconPollTimer;
     private readonly NotifyIcon _notifyIcon;
     private readonly Icon _trayIcon;
@@ -29,10 +30,9 @@ public sealed class SystemTrayContext : ApplicationContext
     private readonly ToolStripMenuItem _pauseMenuItem;
     private readonly ToolStripMenuItem _controlsOverlayMenuItem;
     private readonly ToolStripMenuItem _windowedMenuItem;
-    private readonly ToolStripMenuItem _sceneStudyItem;
-    private readonly ToolStripMenuItem _sceneTatamiItem;
-    private readonly ToolStripMenuItem _sceneGardenItem;
-    private readonly ToolStripMenuItem _sceneCafeItem;
+    private readonly ToolStripMenuItem _kittenModeMenuItem;
+    private readonly ToolStripMenuItem _soundEnabledMenuItem;
+    private readonly Dictionary<string, ToolStripMenuItem> _sceneMenuItems = new(StringComparer.OrdinalIgnoreCase);
     private readonly ToolStripMenuItem _lightingAutoItem;
     private readonly ToolStripMenuItem _lightingDayItem;
     private readonly ToolStripMenuItem _lightingGoldenItem;
@@ -44,6 +44,9 @@ public sealed class SystemTrayContext : ApplicationContext
     private bool _hasExplicitShowToyDock;
     private IReadOnlyList<DesktopIconRect> _latestIcons = Array.Empty<DesktopIconRect>();
     private double _latestDpiScale = 1.0;
+    private DesktopIconRect? _latestTaskbarRect;
+    private IReadOnlyList<DesktopIconRect> _latestWindowLedges = Array.Empty<DesktopIconRect>();
+    private double _latestLedgeDpiScale = 1.0;
     private bool _userPaused;
     private int _zOrderTickCounter;
     private int _latestActiveCats;
@@ -54,6 +57,7 @@ public sealed class SystemTrayContext : ApplicationContext
     private bool _wasLeftDown;
     private bool _isDesktopLeftSession;
     private int _rescanBusy;
+    private int _ledgeBusy;
     private bool _disposed;
 
     public SystemTrayContext(HostLaunchOptions options)
@@ -106,18 +110,24 @@ public sealed class SystemTrayContext : ApplicationContext
         {
             Checked = options.Windowed
         };
+        _kittenModeMenuItem = new ToolStripMenuItem("Kitten Mode", null, (_, _) => OnToggleKittenMode())
+        {
+            Checked = _settings.KittenMode
+        };
+        _soundEnabledMenuItem = new ToolStripMenuItem("Cat Sounds", null, (_, _) => OnToggleSound())
+        {
+            Checked = _settings.SoundEnabled
+        };
 
-        _sceneStudyItem = new ToolStripMenuItem("Golden Study", null, (_, _) => OnSetSceneTheme("study"));
-        _sceneTatamiItem = new ToolStripMenuItem("Kyoto Tatami", null, (_, _) => OnSetSceneTheme("tatami"));
-        _sceneGardenItem = new ToolStripMenuItem("Sunlit Courtyard", null, (_, _) => OnSetSceneTheme("garden"));
-        _sceneCafeItem = new ToolStripMenuItem("Cat Cafe", null, (_, _) => OnSetSceneTheme("cafe"));
-        var sceneMenuItem = new ToolStripMenuItem("Scene", null,
-        [
-            _sceneStudyItem,
-            _sceneTatamiItem,
-            _sceneGardenItem,
-            _sceneCafeItem
-        ]);
+        var sceneItems = new List<ToolStripItem>();
+        foreach (SceneThemeOption opt in NekoSettings.SceneThemeOptions)
+        {
+            string sceneKey = opt.Key;
+            var item = new ToolStripMenuItem(opt.Label, null, (_, _) => OnSetSceneTheme(sceneKey));
+            _sceneMenuItems[sceneKey] = item;
+            sceneItems.Add(item);
+        }
+        var sceneMenuItem = new ToolStripMenuItem("Scene", null, sceneItems.ToArray());
         UpdateSceneMenuChecks();
 
         _lightingAutoItem = new ToolStripMenuItem("Auto", null, (_, _) => OnSetLightingMode("auto"));
@@ -148,8 +158,24 @@ public sealed class SystemTrayContext : ApplicationContext
         [
             _laserMenuItem,
             new ToolStripMenuItem("Toss Yarn", null, (_, _) => OnTossYarn()),
-            new ToolStripMenuItem("Scene Box", null, (_, _) => OnToggleBox()),
             new ToolStripMenuItem("Drop Treat", null, (_, _) => OnDropTreat()),
+            new ToolStripSeparator(),
+            new ToolStripMenuItem("Mouse Toy", null, (_, _) => SendSpawnAction(SpawnActions.DropMouse)),
+            new ToolStripMenuItem("Fish Toy", null, (_, _) => SendSpawnAction(SpawnActions.DropFish)),
+            new ToolStripMenuItem("Feather Wand", null, (_, _) => SendSpawnAction(SpawnActions.DropFeather)),
+            new ToolStripMenuItem("Crinkle Ball", null, (_, _) => SendSpawnAction(SpawnActions.DropCrinkle)),
+            new ToolStripMenuItem("Spring Toy", null, (_, _) => SendSpawnAction(SpawnActions.DropSpring)),
+            new ToolStripMenuItem("Ping-Pong Ball", null, (_, _) => SendSpawnAction(SpawnActions.DropPingPong)),
+            new ToolStripMenuItem("Hair Tie", null, (_, _) => SendSpawnAction(SpawnActions.DropHairTie)),
+            new ToolStripMenuItem("Soap Bubbles", null, (_, _) => SendSpawnAction(SpawnActions.DropBubbles)),
+            new ToolStripMenuItem("Sneaky Cucumber", null, (_, _) => SendSpawnAction(SpawnActions.DropCucumber)),
+            new ToolStripSeparator(),
+            new ToolStripMenuItem("Scene Box", null, (_, _) => OnToggleBox()),
+            new ToolStripMenuItem("Paper Bag", null, (_, _) => SendSpawnAction(SpawnActions.TogglePaperBag)),
+            new ToolStripMenuItem("Taped Square", null, (_, _) => SendSpawnAction(SpawnActions.ToggleTapedSquare)),
+            new ToolStripMenuItem("Clear Toys", null, (_, _) => SendSpawnAction(SpawnActions.ClearToys)),
+            new ToolStripSeparator(),
+            new ToolStripMenuItem("Photo Snapshot", null, (_, _) => SendSpawnAction(SpawnActions.PhotoSnapshot)),
         ]);
 
         var contextMenu = new ContextMenuStrip
@@ -165,6 +191,8 @@ public sealed class SystemTrayContext : ApplicationContext
         contextMenu.Items.Add(breedsMenuItem);
         contextMenu.Items.Add(quickPlayMenuItem);
         contextMenu.Items.Add(new ToolStripSeparator());
+        contextMenu.Items.Add(_kittenModeMenuItem);
+        contextMenu.Items.Add(_soundEnabledMenuItem);
         contextMenu.Items.Add(_pauseMenuItem);
         contextMenu.Items.Add(_windowedMenuItem);
         contextMenu.Items.Add(_controlsOverlayMenuItem);
@@ -207,6 +235,7 @@ public sealed class SystemTrayContext : ApplicationContext
         {
             _ipc.Send(new SettingsUpdateMessage(_settings.Clone()));
             RescanIcons(forceSend: true, sendSpawnAction: false);
+            PollWindowLedges(forceSend: true);
             _desktopWatcher.PollRecycleBin();
             _ipc.Send(new PowerStateMessage(_host.IsPaused, _userPaused ? PowerReasons.User : PowerReasons.Active));
         };
@@ -424,6 +453,7 @@ public sealed class SystemTrayContext : ApplicationContext
 
         _host.UpdateWallpaperMonitorBounds(GetTargetMonitorBounds());
         RescanIcons(forceSend: true, sendSpawnAction: false);
+        PollWindowLedges(forceSend: true);
     }
 
     private void OnIconPollTick()
@@ -440,12 +470,95 @@ public sealed class SystemTrayContext : ApplicationContext
             RescanIcons(forceSend: false, sendSpawnAction: false);
         }
 
+        PollWindowLedges(forceSend: false);
+
         _zOrderTickCounter++;
         if (_zOrderTickCounter >= 3)
         {
             _zOrderTickCounter = 0;
             _host.EnsureDesktopZOrder();
         }
+    }
+
+    private void PollWindowLedges(bool forceSend)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        double dpiScale = _host.IsHandleCreated ? SysListViewReader.GetMonitorDpiScale(_host.Handle) : 1.0;
+
+        if (_host.IsWindowedMode)
+        {
+            if (forceSend || _latestTaskbarRect is not null || _latestWindowLedges.Count > 0)
+            {
+                _latestTaskbarRect = null;
+                _latestWindowLedges = Array.Empty<DesktopIconRect>();
+                _latestLedgeDpiScale = dpiScale;
+                _ipc.Send(new WindowLedgesMessage(null, _latestWindowLedges));
+            }
+            return;
+        }
+
+        if (!forceSend && Interlocked.CompareExchange(ref _ledgeBusy, 1, 0) != 0)
+        {
+            return;
+        }
+
+        Screen? targetScreen = GetTargetMonitorScreen();
+        Rectangle monitorBounds = targetScreen?.Bounds ?? GetTargetMonitorBounds();
+        Rectangle workingArea = targetScreen?.WorkingArea ?? monitorBounds;
+        IntPtr selfHandle = _host.IsHandleCreated ? _host.Handle : IntPtr.Zero;
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                WindowLedgesMessage collected = _windowLedgeTracker.Collect(
+                    monitorBounds,
+                    workingArea,
+                    dpiScale,
+                    selfHandle);
+
+                if (_disposed)
+                {
+                    return;
+                }
+
+                InvokeOnUi(() =>
+                {
+                    if (_disposed || _host.IsWindowedMode)
+                    {
+                        return;
+                    }
+
+                    bool changed = forceSend
+                        || Math.Abs(dpiScale - _latestLedgeDpiScale) > 0.001
+                        || !WindowLedgeEvaluator.LedgesEqual(
+                            _latestTaskbarRect,
+                            _latestWindowLedges,
+                            collected.TaskbarRect,
+                            collected.WindowTopLedges);
+
+                    _latestTaskbarRect = collected.TaskbarRect;
+                    _latestWindowLedges = collected.WindowTopLedges;
+                    _latestLedgeDpiScale = dpiScale;
+
+                    if (changed)
+                    {
+                        _ipc.Send(collected);
+                    }
+                });
+            }
+            catch (Exception)
+            {
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _ledgeBusy, 0);
+            }
+        });
     }
 
     private void RescanIcons(bool forceSend, bool sendSpawnAction)
@@ -677,6 +790,8 @@ public sealed class SystemTrayContext : ApplicationContext
     private void SyncHostUiFromSettings()
     {
         _controlsOverlayMenuItem.Checked = _settings.ShowToyDock;
+        _kittenModeMenuItem.Checked = _settings.KittenMode;
+        _soundEnabledMenuItem.Checked = _settings.SoundEnabled;
         UpdateSceneMenuChecks();
         UpdateLightingMenuChecks();
         UpdateBreedMenuChecks();
@@ -701,10 +816,10 @@ public sealed class SystemTrayContext : ApplicationContext
     private void UpdateSceneMenuChecks()
     {
         string theme = NekoSettings.NormalizeSceneTheme(_settings.SceneTheme);
-        _sceneStudyItem.Checked = theme == "study";
-        _sceneTatamiItem.Checked = theme == "tatami";
-        _sceneGardenItem.Checked = theme == "garden";
-        _sceneCafeItem.Checked = theme == "cafe";
+        foreach (KeyValuePair<string, ToolStripMenuItem> kvp in _sceneMenuItems)
+        {
+            kvp.Value.Checked = string.Equals(kvp.Key, theme, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private void OnSetLightingMode(string mode)
@@ -739,8 +854,25 @@ public sealed class SystemTrayContext : ApplicationContext
 
     private void OnSetCatCount(int count)
     {
-        _settings.CatCount = Math.Clamp(count, 1, 12);
+        _settings.CatCount = Math.Max(NekoSettings.MinCatCount, count);
         ApplyAndSaveSettings(_settings);
+    }
+
+    private void OnToggleKittenMode()
+    {
+        _settings.KittenMode = !_settings.KittenMode;
+        ApplyAndSaveSettings(_settings);
+    }
+
+    private void OnToggleSound()
+    {
+        _settings.SoundEnabled = !_settings.SoundEnabled;
+        ApplyAndSaveSettings(_settings);
+    }
+
+    private void SendSpawnAction(string action)
+    {
+        _ipc.Send(new SpawnActionMessage(action));
     }
 
     private void OnToggleLaser()
@@ -812,10 +944,14 @@ public sealed class SystemTrayContext : ApplicationContext
         flyout.LightingSelected += OnSetLightingMode;
         flyout.CatCountChanged += OnSetCatCount;
         flyout.BreedModeSelected += OnSetBreedMode;
+        flyout.ToggleKittenModeRequested += OnToggleKittenMode;
+        flyout.ToggleSoundRequested += OnToggleSound;
         flyout.ToggleLaserRequested += OnToggleLaser;
         flyout.TossYarnRequested += OnTossYarn;
         flyout.ToggleBoxRequested += OnToggleBox;
         flyout.DropTreatRequested += OnDropTreat;
+        flyout.DropMouseRequested += () => SendSpawnAction(SpawnActions.DropMouse);
+        flyout.DropFishRequested += () => SendSpawnAction(SpawnActions.DropFish);
         flyout.TogglePauseRequested += () => _ = OnTogglePauseSafeAsync();
         flyout.ToggleWindowedModeRequested += OnToggleWindowed;
         flyout.OpenSettingsRequested += OpenSettingsDialog;
@@ -887,19 +1023,23 @@ public sealed class SystemTrayContext : ApplicationContext
         }
 
         RescanIcons(forceSend: true, sendSpawnAction: false);
+        PollWindowLedges(forceSend: true);
         RefreshFlyoutState();
     }
 
-    private Rectangle GetTargetMonitorBounds()
+    private Screen? GetTargetMonitorScreen()
     {
         Screen[] screens = Screen.AllScreens;
         if (_monitorIndex >= 0 && _monitorIndex < screens.Length)
         {
-            return screens[_monitorIndex].Bounds;
+            return screens[_monitorIndex];
         }
 
-        return Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+        return Screen.PrimaryScreen;
     }
+
+    private Rectangle GetTargetMonitorBounds()
+        => GetTargetMonitorScreen()?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
 
     private void InvokeOnUi(Action action)
     {

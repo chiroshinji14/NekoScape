@@ -8,9 +8,11 @@ import {
 } from '@/entities/PrismMath';
 import type { SceneTheme as IpcSceneTheme } from '@/types/ipc';
 import {
+  CAT_STATES,
   DEFAULT_SETTINGS,
   IDLE_NAP_SECONDS,
   SCENE_THEMES,
+  normalizeCatCount,
   type CatStateName,
   type NekoSettings,
   type SceneTheme,
@@ -104,9 +106,26 @@ describe('PrismMath & Cat Behavior Helpers', () => {
     expect(shouldEnterIdleNap(Number.NaN)).toBe(false);
   });
 
-  it('defines SCENE_THEMES, default study sceneTheme, and expanded CatStateName contract', () => {
-    expect(SCENE_THEMES).toEqual(['study', 'tatami', 'garden', 'cafe']);
+  it('defines all 13 SCENE_THEMES, default study sceneTheme, unlimited catCount, and 50 CatStateName contract', () => {
+    expect(SCENE_THEMES).toEqual([
+      'study',
+      'tatami',
+      'garden',
+      'cafe',
+      'living_room',
+      'rainy_window',
+      'night_balcony',
+      'kitchen',
+      'bedroom',
+      'snowy_window',
+      'sunbeam',
+      'aquarium',
+      'rooftop',
+    ]);
     expect(DEFAULT_SETTINGS.sceneTheme).toBe('study');
+    expect(normalizeCatCount(25)).toBe(25);
+    expect(normalizeCatCount(100)).toBe(100);
+    expect(normalizeCatCount(0)).toBe(1);
 
     const defaultJsonPath = resolve(__dirname, '../../config/default-settings.json');
     const jsonSettings = JSON.parse(readFileSync(defaultJsonPath, 'utf8')) as NekoSettings;
@@ -117,23 +136,7 @@ describe('PrismMath & Cat Behavior Helpers', () => {
     const typedTheme: SceneTheme = themeRef;
     expect(SCENE_THEMES).toContain(typedTheme);
 
-    const allStates: readonly CatStateName[] = [
-      'IDLE',
-      'WANDER',
-      'STALK',
-      'WIGGLE',
-      'POUNCE',
-      'BONK',
-      'NAP',
-      'PETTED',
-      'STARTLED',
-      'IN_BOX',
-      'JUMP_TO_BOX',
-      'JUMP_OUT_BOX',
-      'JUMP_TO_ICON',
-      'PERCH_ICON',
-      'SCRATCH_ICON',
-    ];
-    expect(new Set(allStates).size).toBe(15);
+    const allStates: readonly CatStateName[] = [...CAT_STATES];
+    expect(new Set(allStates).size).toBe(50);
   });
 });

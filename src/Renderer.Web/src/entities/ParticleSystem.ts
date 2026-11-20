@@ -16,7 +16,9 @@ type ParticleKind =
   | 'chimeRing'
   | 'steam'
   | 'petal'
-  | 'exclaim';
+  | 'exclaim'
+  | 'pawPrint'
+  | 'confetti';
 
 interface ParticleSlot {
   active: boolean;
@@ -50,7 +52,7 @@ export class ParticleSystem extends Container {
   private readonly contexts: Record<ParticleKind, GraphicsContext>;
   private poolCursor = 0;
 
-  constructor(poolSize = 260) {
+  constructor(poolSize = 320) {
     super();
     this.eventMode = 'none';
     this.interactiveChildren = false;
@@ -163,6 +165,18 @@ export class ParticleSystem extends Container {
         .stroke({ width: 2.1, color: 0xffd166, alpha: 0.96, cap: 'round' })
         .circle(0, 3.8, 1.35)
         .fill({ color: 0xffd166, alpha: 0.96 }),
+
+      pawPrint: new GraphicsContext()
+        .ellipse(0, 1.4, 3.0, 2.2)
+        .fill({ color: 0xffffff, alpha: 0.92 })
+        .circle(-2.4, -1.8, 1.05)
+        .circle(0, -2.5, 1.05)
+        .circle(2.4, -1.8, 1.05)
+        .fill({ color: 0xffffff, alpha: 0.92 }),
+
+      confetti: new GraphicsContext()
+        .roundRect(-2.4, -1.3, 4.8, 2.6, 0.8)
+        .fill({ color: 0xffffff, alpha: 0.95 }),
     };
 
     const count = Math.max(32, poolSize);
@@ -603,10 +617,164 @@ export class ParticleSystem extends Container {
       case 'note':
         this.spawnMusicNotes(x, y, count ?? 2);
         break;
+      case 'bubbles':
+        this.spawnBubblePop(x, y, count ?? 5);
+        break;
+      case 'paw':
+        this.spawnPawTap(x, y, color ?? 0xf6d4b8);
+        break;
+      case 'snow':
+      case 'rain':
+        this.spawnWaterSplash(x, y, count ?? 4);
+        break;
+      case 'fire':
+      case 'confetti':
+        this.spawnConfettiBurst(x, y, count ?? 6, color);
+        break;
+      case 'zzz':
+        this.spawnSleepZ(x, y);
+        break;
+      case 'alert':
+        this.spawnStartleBurst(x, y);
+        break;
       case 'dust':
       default:
         this.spawnDustPuff(x, y, 0, -14);
         break;
+    }
+  }
+
+  spawnStartleBurst(x: number, y: number): void {
+    const slot = this.acquire('exclaim');
+    slot.gfx.tint = 0xffcf56;
+    slot.x = x;
+    slot.y = y - 18;
+    slot.vx = 0;
+    slot.vy = -34;
+    slot.drag = 0.92;
+    slot.startScale = 0.85;
+    slot.endScale = 1.45;
+    slot.alphaPeak = 1.0;
+    slot.life = 0.65;
+    slot.gfx.position.set(slot.x, slot.y);
+    slot.gfx.scale.set(slot.startScale);
+
+    this.spawnChimeRipple(x, y, 0xffd166);
+    this.spawnDustPuff(x, y + 6, 0, 12);
+  }
+
+  spawnChatterPuff(x: number, y: number): void {
+    const slot = this.acquire('musicNote');
+    slot.gfx.tint = 0xffd78c;
+    slot.x = x + (Math.random() - 0.5) * 8;
+    slot.y = y - 10;
+    slot.vx = (Math.random() - 0.5) * 16;
+    slot.vy = -26;
+    slot.drag = 0.94;
+    slot.startScale = 0.45;
+    slot.endScale = 0.78;
+    slot.alphaPeak = 0.86;
+    slot.life = 0.42;
+    slot.gfx.position.set(slot.x, slot.y);
+    slot.gfx.scale.set(slot.startScale);
+  }
+
+  spawnSneezePuff(x: number, y: number, headingRad: number): void {
+    for (let i = 0; i < 4; i++) {
+      const slot = this.acquire('dust');
+      const ang = headingRad + (Math.random() - 0.5) * 0.65;
+      const speed = 42 + Math.random() * 38;
+      slot.gfx.tint = 0xf8f3eb;
+      slot.x = x + Math.cos(headingRad) * 8;
+      slot.y = y + Math.sin(headingRad) * 8;
+      slot.vx = Math.cos(ang) * speed;
+      slot.vy = Math.sin(ang) * speed;
+      slot.drag = 0.88;
+      slot.startScale = 0.35;
+      slot.endScale = 0.95;
+      slot.alphaPeak = 0.68;
+      slot.life = 0.34;
+      slot.gfx.position.set(slot.x, slot.y);
+      slot.gfx.scale.set(slot.startScale);
+    }
+  }
+
+  spawnHairballPuff(x: number, y: number): void {
+    for (let i = 0; i < 3; i++) {
+      const slot = this.acquire('dust');
+      slot.gfx.tint = 0x9b8f82;
+      slot.x = x + (Math.random() - 0.5) * 6;
+      slot.y = y + (Math.random() - 0.5) * 4;
+      slot.vx = (Math.random() - 0.5) * 18;
+      slot.vy = -12 + Math.random() * 14;
+      slot.ay = 35;
+      slot.drag = 0.89;
+      slot.startScale = 0.52;
+      slot.endScale = 0.78;
+      slot.alphaPeak = 0.78;
+      slot.life = 1.6;
+      slot.gfx.position.set(slot.x, slot.y);
+      slot.gfx.scale.set(slot.startScale);
+    }
+  }
+
+  spawnBubblePop(x: number, y: number, count = 5): void {
+    for (let i = 0; i < count; i++) {
+      const slot = this.acquire('bubble');
+      const ang = (i / count) * Math.PI * 2 + Math.random() * 0.4;
+      const speed = 24 + Math.random() * 28;
+      slot.x = x;
+      slot.y = y;
+      slot.vx = Math.cos(ang) * speed;
+      slot.vy = Math.sin(ang) * speed - 12;
+      slot.drag = 0.91;
+      slot.startScale = 0.55;
+      slot.endScale = 0.95;
+      slot.alphaPeak = 0.82;
+      slot.life = 0.42;
+      slot.gfx.position.set(slot.x, slot.y);
+      slot.gfx.scale.set(slot.startScale);
+    }
+    this.spawnChimeRipple(x, y, 0xb8ecff);
+  }
+
+  spawnPawTap(x: number, y: number, color = 0xf6d4b8): void {
+    const slot = this.acquire('pawPrint');
+    slot.gfx.tint = color;
+    slot.x = x;
+    slot.y = y;
+    slot.vx = 0;
+    slot.vy = -10;
+    slot.drag = 0.94;
+    slot.startScale = 0.72;
+    slot.endScale = 1.08;
+    slot.alphaPeak = 0.84;
+    slot.life = 0.55;
+    slot.gfx.position.set(slot.x, slot.y);
+    slot.gfx.scale.set(slot.startScale);
+  }
+
+  spawnConfettiBurst(x: number, y: number, count = 6, color?: number): void {
+    const palette = [0xffcf56, 0xeb7a72, 0x72c6e8, 0x8cd99a, 0xc39be8];
+    for (let i = 0; i < count; i++) {
+      const slot = this.acquire('confetti');
+      slot.gfx.tint = color ?? palette[i % palette.length];
+      const ang = (i / count) * Math.PI * 2 + Math.random() * 0.5;
+      const speed = 36 + Math.random() * 44;
+      slot.x = x;
+      slot.y = y;
+      slot.vx = Math.cos(ang) * speed;
+      slot.vy = Math.sin(ang) * speed - 24;
+      slot.ay = 80;
+      slot.drag = 0.92;
+      slot.rotation = Math.random() * Math.PI;
+      slot.vRot = (Math.random() - 0.5) * 10;
+      slot.startScale = 0.75;
+      slot.endScale = 0.5;
+      slot.alphaPeak = 0.92;
+      slot.life = 0.65;
+      slot.gfx.position.set(slot.x, slot.y);
+      slot.gfx.scale.set(slot.startScale);
     }
   }
 

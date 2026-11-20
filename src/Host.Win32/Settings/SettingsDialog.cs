@@ -19,14 +19,19 @@ public sealed class SettingsDialog : Form
     private readonly ModernActionChip _refreshIconsChip;
 
     // Appearance & Breeds
-    private readonly Dictionary<string, ModernSceneCard> _sceneCards = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ModernOptionPicker _scenePicker;
     private readonly ModernSegmentedBar _lightingBar;
     private readonly ModernOptionPicker _breedPicker;
+    private readonly ModernToggleRow _kittenModeToggle;
+    private readonly ModernOptionPicker _collarPicker;
+    private readonly ModernToggleRow _collarBellToggle;
 
     // Simulation & Performance
     private readonly ModernStepperCard _catStepper;
     private readonly ModernStepperCard _idleNapStepper;
     private readonly ModernSegmentedBar _fpsBar;
+    private readonly ModernToggleRow _soundEnabledToggle;
+    private readonly ModernStepperCard _soundVolumeStepper;
     private readonly ModernToggleRow _showScenePropsToggle;
     private readonly ModernToggleRow _shellReactionsToggle;
 
@@ -36,7 +41,6 @@ public sealed class SettingsDialog : Form
     private readonly ModernToggleRow _launchAtStartupToggle;
     private readonly ModernToggleRow _debugModeToggle;
 
-    private string _selectedSceneTheme = "study";
     private bool _showHudValue;
 
     public NekoSettings ResultSettings { get; private set; }
@@ -48,7 +52,6 @@ public sealed class SettingsDialog : Form
     {
         NekoSettings normalized = initialSettings.Normalized();
         ResultSettings = normalized.Clone();
-        _selectedSceneTheme = normalized.SceneTheme;
         _showHudValue = normalized.ShowHud;
 
         SuspendLayout();
@@ -61,7 +64,7 @@ public sealed class SettingsDialog : Form
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
         KeyPreview = true;
-        ClientSize = new Size(464, 492);
+        ClientSize = new Size(464, 584);
         BackColor = ModernTheme.SurfaceWindow;
         ForeColor = ModernTheme.InkPrimary;
         Font = new Font("Segoe UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
@@ -79,7 +82,7 @@ public sealed class SettingsDialog : Form
 
         var subLabel = new Label
         {
-            Text = "Personalize your scenes, breeds, and desktop behavior.",
+            Text = "Personalize your scenes, breeds, toys, and desktop behavior.",
             Location = new Point(PadX, 42),
             Size = new Size(ContentWidth, 18),
             ForeColor = ModernTheme.InkSecondary,
@@ -105,35 +108,24 @@ public sealed class SettingsDialog : Form
         _simulationPage = CreatePagePanel(visible: false);
         _systemPage = CreatePagePanel(visible: false);
 
+        int halfW = (ContentWidth - 12) / 2; // 202
+
         // ============================================================
         // TAB 1: APPEARANCE & BREEDS
         // ============================================================
         _appearancePage.Controls.Add(CreateSectionHeader("SCENE", 0, 0, ContentWidth));
-
-        int cardW = (ContentWidth - 12) / 2; // 202
-        (string Key, string Title, string Sub, Color Floor, Color Rug, Color Accent, Point Pos)[] sceneSpecs =
-        [
-            ("study", "Golden Study", "Oak, Monstera & Books", Color.FromArgb(148, 98, 56), Color.FromArgb(228, 212, 190), Color.FromArgb(60, 145, 92), new Point(0, 22)),
-            ("tatami", "Kyoto Tatami", "Bonsai, Tea & Lantern", Color.FromArgb(164, 152, 92), Color.FromArgb(47, 74, 58), Color.FromArgb(240, 168, 184), new Point(cardW + 12, 22)),
-            ("garden", "Sunlit Courtyard", "Koi Pond & Clover", Color.FromArgb(124, 118, 108), Color.FromArgb(72, 130, 74), Color.FromArgb(46, 134, 152), new Point(0, 88)),
-            ("cafe", "Cat Cafe", "Bistro & Cat Tower", Color.FromArgb(172, 138, 108), Color.FromArgb(196, 118, 76), Color.FromArgb(236, 224, 210), new Point(cardW + 12, 88)),
-        ];
-
-        foreach (var spec in sceneSpecs)
+        _scenePicker = new ModernOptionPicker(
+            "Scene Theme",
+            TrayFlyoutForm.ScenePickerOptions,
+            normalized.SceneTheme)
         {
-            var card = new ModernSceneCard(spec.Key, spec.Title, spec.Sub, spec.Floor, spec.Rug, spec.Accent)
-            {
-                Location = spec.Pos,
-                Size = new Size(cardW, 56),
-                Selected = string.Equals(spec.Key, _selectedSceneTheme, StringComparison.OrdinalIgnoreCase),
-                AccessibleName = $"Select {spec.Title} scene",
-            };
-            card.Clicked += SelectSceneCard;
-            _sceneCards[spec.Key] = card;
-            _appearancePage.Controls.Add(card);
-        }
+            Location = new Point(0, 22),
+            Size = new Size(ContentWidth, 44),
+            AccessibleName = "Scene theme selector",
+        };
+        _appearancePage.Controls.Add(_scenePicker);
 
-        _appearancePage.Controls.Add(CreateSectionHeader("LIGHTING", 0, 158, ContentWidth));
+        _appearancePage.Controls.Add(CreateSectionHeader("LIGHTING", 0, 78, ContentWidth));
         _lightingBar = new ModernSegmentedBar(
             [
                 ("auto", "Auto"),
@@ -142,46 +134,76 @@ public sealed class SettingsDialog : Form
                 ("night", "Night"),
             ])
         {
-            Location = new Point(0, 180),
+            Location = new Point(0, 100),
             Size = new Size(ContentWidth, 36),
             SelectedKey = normalized.LightingMode,
             AccessibleName = "Lighting mode selector",
         };
         _appearancePage.Controls.Add(_lightingBar);
 
-        _appearancePage.Controls.Add(CreateSectionHeader("BREED MIX", 0, 230, ContentWidth));
+        _appearancePage.Controls.Add(CreateSectionHeader("BREEDS & CUSTOMIZATION", 0, 148, ContentWidth));
         _breedPicker = new ModernOptionPicker(
             "Cat Breeds",
             TrayFlyoutForm.BreedPickerOptions,
             normalized.BreedMode)
         {
-            Location = new Point(0, 252),
+            Location = new Point(0, 170),
             Size = new Size(ContentWidth, 44),
             AccessibleName = "Preferred cat breed mix",
         };
+        _kittenModeToggle = new ModernToggleRow(
+            "Kitten Mode",
+            "Smaller playful proportions, bigger ears, and kitten mews",
+            normalized.KittenMode)
+        {
+            Location = new Point(0, 222),
+            Size = new Size(ContentWidth, 48),
+            AccessibleName = "Toggle kitten mode",
+        };
+        _collarPicker = new ModernOptionPicker(
+            "Collar Color",
+            TrayFlyoutForm.CollarPickerOptions,
+            CollarColorToPickerKey(normalized.CollarColor))
+        {
+            Location = new Point(0, 278),
+            Size = new Size(ContentWidth, 44),
+            AccessibleName = "Collar color selector",
+        };
+        _collarBellToggle = new ModernToggleRow(
+            "Collar Bell",
+            "Tiny jingle bell chime when a collar is worn",
+            normalized.CollarBell)
+        {
+            Location = new Point(0, 330),
+            Size = new Size(ContentWidth, 48),
+            AccessibleName = "Toggle collar bell",
+        };
         _appearancePage.Controls.Add(_breedPicker);
+        _appearancePage.Controls.Add(_kittenModeToggle);
+        _appearancePage.Controls.Add(_collarPicker);
+        _appearancePage.Controls.Add(_collarBellToggle);
 
         // ============================================================
-        // TAB 2: SIMULATION & PERFORMANCE
+        // TAB 2: SIMULATION & AUDIO
         // ============================================================
         _simulationPage.Controls.Add(CreateSectionHeader("CATS & PACE", 0, 0, ContentWidth));
 
-        _catStepper = new ModernStepperCard("Cats", 1, 12, normalized.CatCount)
+        _catStepper = new ModernStepperCard("Cats", NekoSettings.MinCatCount, int.MaxValue, normalized.CatCount)
         {
             Location = new Point(0, 22),
-            Size = new Size(cardW, 48),
-            AccessibleName = "Number of cats",
+            Size = new Size(halfW, 48),
+            AccessibleName = "Number of cats (Shift-click for 5, click number to type)",
         };
         _idleNapStepper = new ModernStepperCard("Idle Nap", 1, 60, Math.Clamp(normalized.IdleNapMinutes, 1, 60), "m")
         {
-            Location = new Point(cardW + 12, 22),
-            Size = new Size(cardW, 48),
+            Location = new Point(halfW + 12, 22),
+            Size = new Size(halfW, 48),
             AccessibleName = "Idle nap timeout in minutes",
         };
         _simulationPage.Controls.Add(_catStepper);
         _simulationPage.Controls.Add(_idleNapStepper);
 
-        _simulationPage.Controls.Add(CreateSectionHeader("FRAME RATE", 0, 86, ContentWidth));
+        _simulationPage.Controls.Add(CreateSectionHeader("FRAME RATE", 0, 84, ContentWidth));
         _fpsBar = new ModernSegmentedBar(
             [
                 ("30", "30 FPS"),
@@ -189,30 +211,54 @@ public sealed class SettingsDialog : Form
                 ("0", "Uncapped"),
             ])
         {
-            Location = new Point(0, 108),
+            Location = new Point(0, 106),
             Size = new Size(ContentWidth, 36),
             SelectedKey = FpsToKey(normalized.FpsCap),
             AccessibleName = "Frame rate limit",
         };
         _simulationPage.Controls.Add(_fpsBar);
 
-        _simulationPage.Controls.Add(CreateSectionHeader("WORLD & REACTIONS", 0, 160, ContentWidth));
+        _simulationPage.Controls.Add(CreateSectionHeader("AUDIO", 0, 154, ContentWidth));
+        _soundEnabledToggle = new ModernToggleRow(
+            "Cat Sounds",
+            "Gentle procedural purrs, meows, and toy chimes",
+            normalized.SoundEnabled)
+        {
+            Location = new Point(0, 176),
+            Size = new Size(ContentWidth, 48),
+            AccessibleName = "Toggle cat sound effects",
+        };
+        _soundVolumeStepper = new ModernStepperCard(
+            "Sound Volume",
+            0,
+            100,
+            (int)Math.Round(normalized.SoundVolume * 100),
+            "%")
+        {
+            Location = new Point(0, 232),
+            Size = new Size(ContentWidth, 46),
+            AccessibleName = "Sound volume percentage",
+        };
+        _simulationPage.Controls.Add(_soundEnabledToggle);
+        _simulationPage.Controls.Add(_soundVolumeStepper);
+
+        _simulationPage.Controls.Add(CreateSectionHeader("WORLD & REACTIONS", 0, 288, ContentWidth));
         _showScenePropsToggle = new ModernToggleRow(
             "Interactive Scene Props",
-            "Clickable lamps, ponds, cushions, and cozy details",
+            "Clickable ponds, fireplaces, aquariums, and cozy details",
             normalized.ShowSceneProps)
         {
-            Location = new Point(0, 182),
-            Size = new Size(ContentWidth, 48),
+            Location = new Point(0, 308),
+            Size = new Size(ContentWidth, 44),
             AccessibleName = "Toggle interactive scene props",
         };
         _shellReactionsToggle = new ModernToggleRow(
             "Desktop Reactions",
-            "Cats investigate new files and react to the Recycle Bin",
+            "Cats walk taskbar/window ledges and react to new files",
             normalized.EnableShellReactions)
         {
-            Location = new Point(0, 240),
-            Size = new Size(ContentWidth, 48),
+            Location = new Point(0, 356),
+            Size = new Size(ContentWidth, 44),
             AccessibleName = "Toggle desktop reactions",
         };
         _simulationPage.Controls.Add(_showScenePropsToggle);
@@ -255,7 +301,7 @@ public sealed class SettingsDialog : Form
         };
         _debugModeToggle = new ModernToggleRow(
             "Debug Overlay",
-            "Show collision bounds, velocity paths, and cat states",
+            "Show collision bounds, ledges, needs, and cat states",
             normalized.DebugMode)
         {
             Location = new Point(0, 224),
@@ -270,7 +316,7 @@ public sealed class SettingsDialog : Form
         // ============================================================
         _refreshIconsChip = new ModernActionChip("Refresh Icons", glyph: ActionGlyph.Refresh)
         {
-            Location = new Point(PadX, 438),
+            Location = new Point(PadX, 532),
             Size = new Size(124, 34),
             AccessibleName = "Refresh desktop icons",
         };
@@ -278,7 +324,7 @@ public sealed class SettingsDialog : Form
 
         var cancelChip = new ModernActionChip("Cancel")
         {
-            Location = new Point(PadX + ContentWidth - 264, 438),
+            Location = new Point(PadX + ContentWidth - 264, 532),
             Size = new Size(82, 34),
             AccessibleName = "Cancel changes",
         };
@@ -290,7 +336,7 @@ public sealed class SettingsDialog : Form
 
         var applyChip = new ModernActionChip("Apply")
         {
-            Location = new Point(PadX + ContentWidth - 174, 438),
+            Location = new Point(PadX + ContentWidth - 174, 532),
             Size = new Size(82, 34),
             AccessibleName = "Apply changes",
         };
@@ -302,7 +348,7 @@ public sealed class SettingsDialog : Form
 
         var saveChip = new ModernActionChip("Save")
         {
-            Location = new Point(PadX + ContentWidth - 84, 438),
+            Location = new Point(PadX + ContentWidth - 84, 532),
             Size = new Size(84, 34),
             Active = true,
             AccessibleName = "Save and close settings",
@@ -343,7 +389,7 @@ public sealed class SettingsDialog : Form
     private static Panel CreatePagePanel(bool visible) => new()
     {
         Location = new Point(PadX, 118),
-        Size = new Size(ContentWidth, 300),
+        Size = new Size(ContentWidth, 402),
         BackColor = ModernTheme.SurfaceWindow,
         Visible = visible,
     };
@@ -375,31 +421,29 @@ public sealed class SettingsDialog : Form
         e.Graphics.DrawLine(dividerPen, padX, dividerY, ClientSize.Width - padX, dividerY);
     }
 
-    private void SelectSceneCard(string sceneKey)
-    {
-        _selectedSceneTheme = NekoSettings.NormalizeSceneTheme(sceneKey);
-        foreach (KeyValuePair<string, ModernSceneCard> kvp in _sceneCards)
-        {
-            kvp.Value.Selected = string.Equals(kvp.Key, _selectedSceneTheme, StringComparison.OrdinalIgnoreCase);
-        }
-    }
-
     public void SyncFromSettings(NekoSettings settings)
     {
         NekoSettings normalized = settings.Normalized();
         ResultSettings = normalized.Clone();
         _showHudValue = normalized.ShowHud;
 
-        SelectSceneCard(normalized.SceneTheme);
+        _scenePicker.SelectedKey = normalized.SceneTheme;
         _lightingBar.SelectedKey = normalized.LightingMode;
         _breedPicker.SelectedKey = normalized.BreedMode;
+        _kittenModeToggle.Checked = normalized.KittenMode;
+        _collarPicker.SelectedKey = CollarColorToPickerKey(normalized.CollarColor);
+        _collarBellToggle.Checked = normalized.CollarBell;
+
         _fpsBar.SelectedKey = FpsToKey(normalized.FpsCap);
         _catStepper.Value = normalized.CatCount;
         _idleNapStepper.Value = Math.Clamp(normalized.IdleNapMinutes, 1, 60);
+        _soundEnabledToggle.Checked = normalized.SoundEnabled;
+        _soundVolumeStepper.Value = (int)Math.Round(normalized.SoundVolume * 100);
         _showScenePropsToggle.Checked = normalized.ShowSceneProps;
+        _shellReactionsToggle.Checked = normalized.EnableShellReactions;
+
         _showToyDockToggle.Checked = normalized.ShowToyDock;
         _laserHotkeyToggle.Checked = normalized.EnableLaserHotkey;
-        _shellReactionsToggle.Checked = normalized.EnableShellReactions;
         _debugModeToggle.Checked = normalized.DebugMode;
         _launchAtStartupToggle.Checked = normalized.LaunchAtStartup;
     }
@@ -425,11 +469,25 @@ public sealed class SettingsDialog : Form
             LaunchAtStartup = _launchAtStartupToggle.Checked,
             IdleNapMinutes = _idleNapStepper.Value,
             LightingMode = NekoSettings.NormalizeLightingMode(_lightingBar.SelectedKey),
-            SceneTheme = NekoSettings.NormalizeSceneTheme(_selectedSceneTheme),
+            SceneTheme = NekoSettings.NormalizeSceneTheme(_scenePicker.SelectedKey),
             BreedMode = NekoSettings.NormalizeBreedMode(_breedPicker.SelectedKey),
             ShowSceneProps = _showScenePropsToggle.Checked,
+            KittenMode = _kittenModeToggle.Checked,
+            CollarColor = PickerKeyToCollarColor(_collarPicker.SelectedKey),
+            CollarBell = _collarBellToggle.Checked,
+            SoundEnabled = _soundEnabledToggle.Checked,
+            SoundVolume = Math.Round(_soundVolumeStepper.Value / 100.0, 2),
         }.Normalized();
     }
+
+    private static string CollarColorToPickerKey(string? collarColor)
+    {
+        string? normalized = NekoSettings.NormalizeCollarColor(collarColor);
+        return normalized is null ? "none" : normalized;
+    }
+
+    private static string? PickerKeyToCollarColor(string? key)
+        => NekoSettings.NormalizeCollarColor(key);
 
     private static string FpsToKey(int fpsCap) => fpsCap switch
     {

@@ -1,6 +1,9 @@
 import './styles/hud.css';
 
 import { Application, Container } from 'pixi.js';
+import { CatAudioEngine } from './core/CatAudioEngine';
+import { getCircadianPhase } from './core/CatBrain';
+import { captureCanvasPhoto } from './core/PhotoCapture';
 import { PhysicsWorld } from './core/PhysicsWorld';
 import { SurfaceManager } from './core/SurfaceManager';
 import { CardboardBox } from './entities/CardboardBox';
@@ -13,6 +16,7 @@ import {
 } from './entities/CatEntity';
 import { ParticleSystem } from './entities/ParticleSystem';
 import { PrismLaser } from './entities/PrismLaser';
+import { ToyManager } from './entities/ToyManager';
 import { YarnBall } from './entities/YarnBall';
 import { HardwoodFloor } from './environment/HardwoodFloor';
 import { IconMatsOverlay } from './environment/IconMatsOverlay';
@@ -21,21 +25,30 @@ import { RugOverlay } from './environment/RugOverlay';
 import { ScenePropsOverlay } from './environment/ScenePropsOverlay';
 import type { HostToRendererMessage, RendererToHostMessage } from './types/ipc';
 import {
+  CAT_BREEDS,
   DEFAULT_SETTINGS,
   RECYCLE_STARTLE_RADIUS,
-  SCENE_THEMES,
+  TOY_LABELS,
   normalizeBreedMode,
+  normalizeCatCount,
+  normalizeSceneTheme,
   type AabbRect,
+  type CatArchetype,
   type CatBreed,
   type CatBreedMode,
   type CatMood,
+  type CatNeeds,
   type CatPersonality,
   type CatStateName,
+  type CircadianPhase,
   type InteractivePropState,
   type LightingMode,
   type NekoSettings,
-  type SceneTheme,
+  type SceneThemeName,
+  type ToyEntityState,
+  type ToyKind,
   type Vec2,
+  type WindowLedgesState,
 } from './types/simulation';
 import { DebugVisualizer } from './ui/DebugVisualizer';
 import { HudOverlay } from './ui/HudOverlay';
@@ -60,20 +73,33 @@ export interface NekoScapeDebugApi {
     debugMode: boolean;
     lightingMode: LightingMode;
     effectiveLighting: EffectiveLightingMode;
-    sceneTheme: SceneTheme;
+    sceneTheme: SceneThemeName;
     breedMode: CatBreedMode;
     showSceneProps: boolean;
     activeTreatsCount: number;
+    activeToysCount: number;
     interactivePropsCount: number;
     nativeHostConnected: boolean;
     fpsCap: number;
+    kittenMode: boolean;
+    collarColor: string | null;
+    collarBell: boolean;
+    soundEnabled: boolean;
+    soundVolume: number;
+    circadianPhase: CircadianPhase;
   };
   getCats: () => Array<{
     id: number;
     name: string;
     breed: CatBreed;
     mood: CatMood;
+    archetype: CatArchetype;
+    needs: CatNeeds;
     personality: CatPersonality;
+    isKitten: boolean;
+    friendshipLevel: number;
+    isSleeping: boolean;
+    sleepIndicator: string;
     activePropId: string | null;
     state: CatStateName;
     x: number;
@@ -85,10 +111,14 @@ export interface NekoScapeDebugApi {
   }>;
   getObstacles: () => AabbRect[];
   getInteractiveProps: () => readonly InteractivePropState[];
+  getToys: () => readonly ToyEntityState[];
   isSplitPrism: () => boolean;
   getLighting: () => { mode: LightingMode; effective: EffectiveLightingMode };
   dropTreat: (x?: number, y?: number) => void;
+  dropToy: (kind: ToyKind, x?: number, y?: number) => void;
+  clearToys: () => void;
   clickAt: (x: number, y: number, doubleClick?: boolean) => boolean;
+  takePhoto: () => Promise<boolean>;
 }
 
 declare global {
@@ -116,6 +146,7 @@ class PettingDetector {
     nowSec: number,
     cats: readonly CatEntity[],
     particles: ParticleSystem,
+    audioEngine: CatAudioEngine,
   ): void {
     const prev = this.samples[this.samples.length - 1];
     if (prev && Math.hypot(x - prev.x, y - prev.y) < 3) {
@@ -149,6 +180,7 @@ class PettingDetector {
         this.lastPetTimeByCat.set(cat.id, nowSec);
         cat.triggerPet();
         particles.spawnPurr(catPos.x, catPos.y - 12);
+        audioEngine.play('purr');
       }
     }
   }
@@ -191,24 +223,21 @@ function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
 }
 
-function normalizeSceneTheme(theme: unknown): SceneTheme {
-  if (typeof theme === 'string') {
-    const normalized = theme.trim().toLowerCase() as SceneTheme;
-    if ((SCENE_THEMES as readonly string[]).includes(normalized)) {
-      return normalized;
-    }
-  }
-  return 'study';
-}
-
 function isCatCollisionExempt(state: CatStateName): boolean {
   return (
     state === 'IN_BOX' ||
     state === 'JUMP_TO_BOX' ||
     state === 'JUMP_OUT_BOX' ||
     state === 'JUMP_TO_ICON' ||
-    state === 'PERCH_ICON'
+    state === 'PERCH_ICON' ||
+    state === 'TASKBAR_WALK' ||
+    state === 'PAPER_BAG_AMBUSH'
   );
+}
+
+function isCatRestingForSeparation(cat: CatEntity): boolean {
+  const s = cat.getState();
+  return cat.isSleeping() || s === 'SUNBATHE';
 }
 
 function parseHostMessage(raw: unknown): HostToRendererMessage | null {
@@ -243,6 +272,7 @@ async function bootstrap(): Promise<void> {
     autoDensity: true,
     resolution: window.devicePixelRatio || 1,
     backgroundColor: 0x3b281c,
+    preserveDrawingBuffer: true,
   });
 
   app.canvas.setAttribute('aria-label', 'NekoScape interactive desktop floor');
@@ -256,6 +286,7 @@ async function bootstrap(): Promise<void> {
   const rugLayer = new Container();
   const iconMatsLayer = new Container();
   const scenePropsUnderLayer = new Container();
+  const floorToysLayer = new Container();
   const boxBaseLayer = new Container();
   const shadowsLayer = new Container();
   const propsLayer = new Container();
@@ -273,6 +304,7 @@ async function bootstrap(): Promise<void> {
     rugLayer,
     iconMatsLayer,
     scenePropsUnderLayer,
+    floorToysLayer,
     boxBaseLayer,
     shadowsLayer,
     propsLayer,
@@ -290,6 +322,10 @@ async function bootstrap(): Promise<void> {
   const settings: NekoSettings = { ...DEFAULT_SETTINGS };
   const surfaceManager = new SurfaceManager(viewWidth, viewHeight);
   const physics = new PhysicsWorld(viewWidth, viewHeight, surfaceManager);
+  const audioEngine = new CatAudioEngine({
+    enabled: settings.soundEnabled,
+    volume: settings.soundVolume,
+  });
 
   const initialRug = surfaceManager.getRugBounds();
 
@@ -327,9 +363,12 @@ async function bootstrap(): Promise<void> {
   scenePropsOverlay.setNightMode(lastEffectiveLighting === 'night');
   lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
 
-  // Particles & Props
-  const particleSystem = new ParticleSystem(180);
+  // Particles, Toys & Props
+  const particleSystem = new ParticleSystem(220);
   particlesLayer.addChild(particleSystem);
+
+  const toyManager = new ToyManager(viewWidth, viewHeight);
+  toyManager.attachLayersTo(shadowsLayer, floorToysLayer, propsLayer);
 
   const yarnBall = new YarnBall(
     Math.round(initialRug.x + initialRug.width * 0.25),
@@ -377,12 +416,15 @@ async function bootstrap(): Promise<void> {
   let hostKeysPerMinute = 0;
   let hostIdleSeconds = 0;
   let lastHostTypingAtMs = -Infinity;
+  let windowLedges: WindowLedgesState = { taskbarRect: null, windowTopLedges: [] };
 
   let recycleBinItems = 2;
   let recycleBinBatTimer = 14;
   let nextPlayIconMode: 'perch' | 'scratch' = 'perch';
   let playIconCursor = 0;
   let lastTrackedTreatCount = 0;
+  let lastTrackedToyCount = 0;
+  let lastTrackedCircadianPhase: CircadianPhase = getCircadianPhase();
 
   // UI Overlays (initialized early so perch tracking can reference mockIcons safely)
   const hud = new HudOverlay(hudRoot);
@@ -430,23 +472,36 @@ async function bootstrap(): Promise<void> {
     syncOccupiedIconIds();
   }
 
-  // Cat Pack management with diverse real-life breed showcase & decorrelated seeds
+  // Unlimited Cat Pack management with 14 real-life breeds, decorrelated seeds & scalable spatial spread
   const cats: CatEntity[] = [];
   let nextCatId = 1;
   let breedRotationOffset = 0;
 
-  function computeCatSpawnPoint(index: number): Vec2 {
+  function computeCatSpawnPoint(index: number, totalCount: number): Vec2 {
     const rug = surfaceManager.getRugBounds();
-    const cx = rug.x + rug.width * 0.5;
-    const cy = rug.y + rug.height * 0.5;
-    // Golden-angle spiral distribution so spawned cats never cluster in identical columns
     const goldenAngle = index * 2.399963229728653 + 0.35;
-    const radialFrac = 0.24 + ((index * 0.29) % 0.68);
-    const rx = Math.min(rug.width * 0.42, Math.max(46, rug.width * 0.42 * radialFrac));
-    const ry = Math.min(rug.height * 0.4, Math.max(38, rug.height * 0.4 * radialFrac));
+
+    if (totalCount <= 14 || index < 14) {
+      const cx = rug.x + rug.width * 0.5;
+      const cy = rug.y + rug.height * 0.5;
+      const radialFrac = 0.22 + ((index * 0.27) % 0.72);
+      const rx = Math.min(rug.width * 0.44, Math.max(46, rug.width * 0.44 * radialFrac));
+      const ry = Math.min(rug.height * 0.42, Math.max(38, rug.height * 0.42 * radialFrac));
+      return {
+        x: clamp(cx + Math.cos(goldenAngle) * rx, 40, viewWidth - 40),
+        y: clamp(cy + Math.sin(goldenAngle) * ry, 40, viewHeight - 40),
+      };
+    }
+
+    // Smooth Vogel spiral across the full viewport for 15..100+ cats so they never pile up
+    const outerIndex = index - 14;
+    const outerTotal = Math.max(1, totalCount - 14);
+    const normR = Math.sqrt((outerIndex + 0.5) / outerTotal);
+    const maxRx = Math.max(120, viewWidth * 0.44);
+    const maxRy = Math.max(90, viewHeight * 0.42);
     return {
-      x: clamp(cx + Math.cos(goldenAngle) * rx, 36, viewWidth - 36),
-      y: clamp(cy + Math.sin(goldenAngle) * ry, 36, viewHeight - 36),
+      x: clamp(viewWidth * 0.5 + Math.cos(goldenAngle) * maxRx * normR, 42, viewWidth - 42),
+      y: clamp(viewHeight * 0.5 + Math.sin(goldenAngle) * maxRy * normR, 42, viewHeight - 42),
     };
   }
 
@@ -457,8 +512,8 @@ async function bootstrap(): Promise<void> {
   }
 
   function syncCatCount(targetCount: number, forceRebuild = false): void {
-    const clamped = Math.max(1, Math.min(12, Math.round(targetCount)));
-    settings.catCount = clamped;
+    const normalizedCount = normalizeCatCount(targetCount, settings.catCount);
+    settings.catCount = normalizedCount;
 
     if (forceRebuild) {
       while (cats.length > 0) {
@@ -472,35 +527,45 @@ async function bootstrap(): Promise<void> {
     }
 
     const desiredBreeds = pickDiverseBreedOrder(
-      clamped,
+      normalizedCount,
       settings.breedMode,
       breedRotationOffset,
     );
 
-    while (cats.length < clamped) {
+    while (cats.length < normalizedCount) {
       const idx = cats.length;
       const breed = desiredBreeds[idx] ?? desiredBreeds[idx % desiredBreeds.length];
-      const spawn = computeCatSpawnPoint(idx);
+      const spawn = computeCatSpawnPoint(idx, normalizedCount);
       const id = nextCatId++;
       const seed = computeDecorrelatedSeed(id, idx);
       const coatVariantIndex =
-        settings.breedMode === 'mix' ? Math.floor(idx / 6) : idx;
+        settings.breedMode === 'mix' ? Math.floor(idx / CAT_BREEDS.length) : idx;
       const cat = new CatEntity(id, breed, spawn.x, spawn.y, {
         seed,
         coatVariantIndex,
+        isKitten: settings.kittenMode,
+        collarColor: settings.collarColor,
+        hasBell: settings.collarBell,
       });
       cat.attachShadowTo(shadowsLayer);
       catsLayer.addChild(cat);
       cats.push(cat);
     }
 
-    while (cats.length > clamped) {
+    while (cats.length > normalizedCount) {
       const removed = cats.pop();
       if (removed) {
         cardboardBox.release(removed.id);
         updateCatPerch(removed.id, null);
         removed.destroy();
       }
+    }
+  }
+
+  function syncCatCustomizationToPack(): void {
+    for (const cat of cats) {
+      cat.setKittenMode(settings.kittenMode);
+      cat.setCollar(settings.collarColor, settings.collarBell);
     }
   }
 
@@ -527,7 +592,11 @@ async function bootstrap(): Promise<void> {
     const laserActive = isLaserCurrentlyActive();
     const splitPrism = prismLaser.isSplitActive();
     const activeTreatsCount = scenePropsOverlay.getActiveTreats().length;
+    const activeToysCount = toyManager.getActiveCount();
+    const circadianPhase = getCircadianPhase();
     lastTrackedTreatCount = activeTreatsCount;
+    lastTrackedToyCount = activeToysCount;
+    lastTrackedCircadianPhase = circadianPhase;
 
     hud.setStats({
       sceneTheme: settings.sceneTheme,
@@ -537,6 +606,10 @@ async function bootstrap(): Promise<void> {
       laserActive,
       splitPrism,
       activeTreatsCount,
+      activeToysCount,
+      circadianPhase,
+      soundEnabled: settings.soundEnabled,
+      kittenMode: settings.kittenMode,
       paused,
       lightingMode: settings.lightingMode,
       effectiveLighting: effective,
@@ -550,8 +623,17 @@ async function bootstrap(): Promise<void> {
       boxVisible: cardboardBox.isVisible(),
       catCount: settings.catCount,
       breedMode: settings.breedMode,
+      kittenMode: settings.kittenMode,
+      collarColor: settings.collarColor,
+      collarBell: settings.collarBell,
+      soundEnabled: settings.soundEnabled,
+      soundVolume: settings.soundVolume,
       propsVisible: settings.showSceneProps,
       activeTreatsCount,
+      activeToysCount,
+      paperBagActive: toyManager.isPaperBagActive(),
+      tapedSquareActive: toyManager.isTapedSquareActive(),
+      circadianPhase,
       hudVisible: settings.showHud,
       debugMode: settings.debugMode,
       visible: settings.showToyDock,
@@ -565,11 +647,16 @@ async function bootstrap(): Promise<void> {
 
   function startleCatsNear(origin: Vec2): void {
     particleSystem.spawnDustPuff(origin.x, origin.y, 0, -40);
+    let startledAny = false;
     for (const cat of cats) {
       const pos = cat.getPosition();
       if (Math.hypot(pos.x - origin.x, pos.y - origin.y) <= RECYCLE_STARTLE_RADIUS) {
         cat.triggerStartle(origin);
+        startledAny = true;
       }
+    }
+    if (startledAny) {
+      audioEngine.play('startle');
     }
   }
 
@@ -628,6 +715,7 @@ async function bootstrap(): Promise<void> {
       y: treat.y - 4,
       count: 5,
     });
+    audioEngine.play('crunch');
     attractCatsToTreat(treat.id, 2);
     if (showToast) {
       hud.showInteractionToast({
@@ -641,7 +729,195 @@ async function bootstrap(): Promise<void> {
     refreshUiOverlays();
   }
 
-  function setSceneTheme(theme: SceneTheme, notifyHost = true): void {
+  function pickToyDropPoint(kind: ToyKind, explicitX?: number, explicitY?: number): Vec2 {
+    if (explicitX !== undefined && explicitY !== undefined) {
+      return {
+        x: clamp(explicitX, 44, viewWidth - 44),
+        y: clamp(explicitY, 44, viewHeight - 44),
+      };
+    }
+
+    const rug = surfaceManager.getRugBounds();
+
+    // Sneaky cucumber: place quietly right behind an awake grounded cat for instant comedic payoff!
+    if (kind === 'cucumber' && cats.length > 0) {
+      const candidate =
+        cats.find((c) => !c.isSleeping() && !isCatCollisionExempt(c.getState())) ?? cats[0];
+      const pos = candidate.getPosition();
+      const vel = candidate.getVelocity();
+      const heading =
+        Math.hypot(vel.x, vel.y) > 8 ? Math.atan2(vel.y, vel.x) : candidate.id * 1.1;
+      return {
+        x: clamp(pos.x - Math.cos(heading) * 44, 52, viewWidth - 52),
+        y: clamp(pos.y - Math.sin(heading) * 44, 52, viewHeight - 52),
+      };
+    }
+
+    const angle = Math.random() * Math.PI * 2;
+    const rx = rug.width * (0.15 + Math.random() * 0.25);
+    const ry = rug.height * (0.15 + Math.random() * 0.25);
+    return {
+      x: clamp(rug.x + rug.width * 0.5 + Math.cos(angle) * rx, 56, viewWidth - 56),
+      y: clamp(rug.y + rug.height * 0.5 + Math.sin(angle) * ry, 56, viewHeight - 56),
+    };
+  }
+
+  function dropOrToggleToy(kind: ToyKind, x?: number, y?: number, showToast = true): void {
+    const pt = pickToyDropPoint(kind, x, y);
+
+    if (kind === 'paper_bag') {
+      const bag = toyManager.togglePaperBag(pt.x, pt.y);
+      audioEngine.play('crinkle');
+      if (bag) {
+        particleSystem.spawnPropBurst({ kind: 'dust', x: bag.x, y: bag.y, count: 5 });
+        if (showToast) {
+          hud.showInteractionToast({
+            kind: 'toy',
+            title: TOY_LABELS.paper_bag,
+            subtitle: 'Crinkly ambush hideout placed on the floor',
+            x: bag.x,
+            y: bag.y - 24,
+          });
+        }
+      } else if (showToast) {
+        hud.showInteractionToast({
+          kind: 'toy',
+          title: TOY_LABELS.paper_bag,
+          subtitle: 'Paper bag tidied away',
+        });
+      }
+      refreshUiOverlays();
+      return;
+    }
+
+    if (kind === 'taped_square') {
+      const sq = toyManager.toggleTapedSquare(pt.x, pt.y);
+      if (sq) {
+        particleSystem.spawnPropBurst({ kind: 'sparkle', x: sq.x, y: sq.y, count: 6 });
+        if (showToast) {
+          hud.showInteractionToast({
+            kind: 'toy',
+            title: TOY_LABELS.taped_square,
+            subtitle: 'Irresistible cat-trap square taped to the floor',
+            x: sq.x,
+            y: sq.y - 34,
+          });
+        }
+      } else if (showToast) {
+        hud.showInteractionToast({
+          kind: 'toy',
+          title: TOY_LABELS.taped_square,
+          subtitle: 'Floor tape removed',
+        });
+      }
+      refreshUiOverlays();
+      return;
+    }
+
+    if (kind === 'bubbles') {
+      const spawned = toyManager.spawnBubbles(pt.x, pt.y);
+      const anchor = spawned[0] ?? { x: pt.x, y: pt.y };
+      audioEngine.play('bubble_pop');
+      particleSystem.spawnPropBurst({ kind: 'bubbles', x: anchor.x, y: anchor.y, count: 6 });
+      if (showToast) {
+        hud.showInteractionToast({
+          kind: 'toy',
+          title: TOY_LABELS.bubbles,
+          subtitle: `Released ${spawned.length} iridescent soap bubbles`,
+          x: anchor.x,
+          y: anchor.y - 16,
+        });
+      }
+      refreshUiOverlays();
+      return;
+    }
+
+    const toy = toyManager.spawnToy(kind, pt.x, pt.y);
+    particleSystem.spawnPropBurst({
+      kind: kind === 'mouse_toy' ? 'catnip' : kind === 'cucumber' ? 'alert' : 'sparkle',
+      x: toy.x,
+      y: toy.y,
+      count: 6,
+    });
+
+    if (kind === 'crinkle_ball') {
+      audioEngine.play('crinkle');
+    } else if (kind === 'mouse_toy' || kind === 'fish_toy') {
+      audioEngine.play('chirp');
+    } else if (kind === 'feather_wand' || kind === 'spring_toy') {
+      audioEngine.play('bell');
+    }
+
+    if (showToast) {
+      const subtitles: Record<ToyKind, string> = {
+        mouse_toy: 'Plush catnip mouse tossed onto the floor',
+        fish_toy: 'Flopping striped fish dropped for hunting',
+        feather_wand: 'Swaying feather wand ready to snatch',
+        crinkle_ball: 'Foil crinkle ball skittering across the room',
+        spring_toy: 'Bouncy coil spring launched',
+        ping_pong: 'High-bounce ping-pong ball tossed',
+        hair_tie: 'Air-hockey hair tie slid across the floor',
+        bubbles: 'Iridescent soap bubbles floating down',
+        cucumber: 'Sneaky green cucumber placed quietly…',
+        taped_square: 'Masking-tape cat trap placed',
+        paper_bag: 'Crinkly kraft paper bag placed',
+      };
+      hud.showInteractionToast({
+        kind: 'toy',
+        title: TOY_LABELS[kind],
+        subtitle: subtitles[kind],
+        x: toy.x,
+        y: toy.y - 16,
+      });
+    }
+    refreshUiOverlays();
+  }
+
+  function clearAllToys(showToast = true): void {
+    const prevCount = toyManager.getActiveCount();
+    toyManager.clearAll();
+    if (showToast && prevCount > 0) {
+      hud.showInteractionToast({
+        kind: 'toy',
+        title: 'Toybox Tidied',
+        subtitle: `Cleared ${prevCount} ${prevCount === 1 ? 'toy' : 'toys'} from the floor`,
+      });
+    }
+    refreshUiOverlays();
+  }
+
+  async function triggerPhotoSnapshot(): Promise<boolean> {
+    if (audioEngine.isEnabled()) {
+      audioEngine.play('shutter');
+    }
+    const result = await captureCanvasPhoto(app.canvas, {
+      app: {
+        stage: app.stage,
+        renderer: {
+          render: () => {
+            app.renderer.render(app.stage);
+          },
+          extract: {
+            canvas: () => app.renderer.extract.canvas(app.stage) as HTMLCanvasElement,
+            base64: () => app.renderer.extract.base64(app.stage),
+          },
+        },
+      },
+      filenamePrefix: `nekoscape-${settings.sceneTheme}`,
+      hideElements: [hudRoot, dockRoot, mockIconsRoot],
+      onFlash: () => hud.triggerPhotoFlash(),
+    });
+    if (result.ok) {
+      hud.showInteractionToast({
+        kind: 'photo',
+        title: 'Snapshot Saved',
+        subtitle: result.filename,
+      });
+    }
+    return result.ok;
+  }
+
+  function setSceneTheme(theme: SceneThemeName, notifyHost = true): void {
     const nextTheme = normalizeSceneTheme(theme);
     settings.sceneTheme = nextTheme;
     hardwoodFloor.setTheme(nextTheme);
@@ -680,13 +956,73 @@ async function bootstrap(): Promise<void> {
     settings.breedMode = normalized;
     if (changed) {
       if (normalized === 'mix') {
-        breedRotationOffset = (breedRotationOffset + 1) % 6;
+        breedRotationOffset = (breedRotationOffset + 1) % CAT_BREEDS.length;
       }
       syncCatCount(settings.catCount, true);
     }
     refreshUiOverlays();
     if (notifyHost) {
       notifyHostSettingsChanged({ breedMode: normalized });
+    }
+  }
+
+  function setKittenMode(enabled: boolean, notifyHost = true): void {
+    settings.kittenMode = enabled;
+    syncCatCustomizationToPack();
+    if (enabled) {
+      audioEngine.play('kitten_mew');
+    }
+    refreshUiOverlays();
+    if (notifyHost) {
+      notifyHostSettingsChanged({ kittenMode: enabled });
+    }
+  }
+
+  function setCollarColor(color: string | null, notifyHost = true): void {
+    settings.collarColor = color;
+    syncCatCustomizationToPack();
+    if (color !== null && settings.collarBell) {
+      audioEngine.play('bell');
+    }
+    refreshUiOverlays();
+    if (notifyHost) {
+      notifyHostSettingsChanged({ collarColor: color });
+    }
+  }
+
+  function setCollarBell(enabled: boolean, notifyHost = true): void {
+    settings.collarBell = enabled;
+    syncCatCustomizationToPack();
+    if (enabled && settings.collarColor !== null) {
+      audioEngine.play('bell');
+    }
+    refreshUiOverlays();
+    if (notifyHost) {
+      notifyHostSettingsChanged({ collarBell: enabled });
+    }
+  }
+
+  function setSoundEnabled(enabled: boolean, notifyHost = true): void {
+    settings.soundEnabled = enabled;
+    audioEngine.setEnabled(enabled);
+    if (enabled) {
+      void audioEngine.unlock().then(() => {
+        audioEngine.play('trill');
+      });
+    }
+    refreshUiOverlays();
+    if (notifyHost) {
+      notifyHostSettingsChanged({ soundEnabled: enabled });
+    }
+  }
+
+  function setSoundVolume(volume: number, notifyHost = true): void {
+    const clamped = clamp(volume, 0, 1);
+    settings.soundVolume = clamped;
+    audioEngine.setVolume(clamped);
+    refreshUiOverlays();
+    if (notifyHost) {
+      notifyHostSettingsChanged({ soundVolume: clamped });
     }
   }
 
@@ -725,6 +1061,7 @@ async function bootstrap(): Promise<void> {
       cardboardBox.release(cardboardBox.occupantId);
     } else if (visible) {
       cardboardBox.triggerFlapRustle(undefined, 0.85);
+      audioEngine.play('crinkle');
     }
     refreshUiOverlays();
   }
@@ -745,15 +1082,19 @@ async function bootstrap(): Promise<void> {
     }
   }
 
-  function tossYarnAcrossFloor(): void {
+  function tossYarnAcrossFloor(clickX?: number, clickY?: number): void {
     const pos = yarnBall.getPosition();
-    const rug = surfaceManager.getRugBounds();
-    const cx = rug.x + rug.width * 0.5;
-    const cy = rug.y + rug.height * 0.5;
-    const baseAngle = Math.atan2(cy - pos.y, cx - pos.x) + (Math.random() - 0.5) * 1.1;
-    const speed = 360 + Math.random() * 140;
-    yarnBall.toss(Math.cos(baseAngle) * speed, Math.sin(baseAngle) * speed);
-    particleSystem.spawnDustPuff(pos.x, pos.y, -Math.cos(baseAngle) * 30, -Math.sin(baseAngle) * 30);
+    if (clickX !== undefined && clickY !== undefined) {
+      yarnBall.clickToss(clickX, clickY);
+    } else {
+      const rug = surfaceManager.getRugBounds();
+      const cx = rug.x + rug.width * 0.5;
+      const cy = rug.y + rug.height * 0.5;
+      const baseAngle = Math.atan2(cy - pos.y, cx - pos.x) + (Math.random() - 0.5) * 1.1;
+      const speed = 360 + Math.random() * 140;
+      yarnBall.toss(Math.cos(baseAngle) * speed, Math.sin(baseAngle) * speed);
+    }
+    particleSystem.spawnDustPuff(pos.x, pos.y, 0, -24);
   }
 
   function triggerPlayWithIconAction(): void {
@@ -796,10 +1137,12 @@ async function bootstrap(): Promise<void> {
       onSelectScene: (theme) => setSceneTheme(theme, true),
       onSelectLighting: (mode) => setLightingMode(mode, true),
       onToggleLaser: toggleStickyLaser,
-      onTossYarn: tossYarnAcrossFloor,
+      onTossYarn: () => tossYarnAcrossFloor(),
       onCenterPrism: centerPrismProp,
       onToggleBox: toggleCardboardBox,
       onDropTreat: () => dropTreatAt(undefined, undefined, true),
+      onDropToy: (kind) => dropOrToggleToy(kind, undefined, undefined, true),
+      onClearToys: () => clearAllToys(true),
       onChangeCatCount: (nextCount) => {
         syncCatCount(nextCount);
         refreshUiOverlays();
@@ -807,6 +1150,24 @@ async function bootstrap(): Promise<void> {
       },
       onSelectBreedMode: (breedMode) => {
         setBreedMode(breedMode, true);
+      },
+      onToggleKittenMode: () => {
+        setKittenMode(!settings.kittenMode, true);
+      },
+      onSelectCollarColor: (color) => {
+        setCollarColor(color, true);
+      },
+      onToggleCollarBell: () => {
+        setCollarBell(!settings.collarBell, true);
+      },
+      onToggleSound: () => {
+        setSoundEnabled(!settings.soundEnabled, true);
+      },
+      onChangeSoundVolume: (vol) => {
+        setSoundVolume(vol, true);
+      },
+      onTakePhoto: () => {
+        void triggerPhotoSnapshot();
       },
       onToggleHud: () => {
         settings.showHud = !settings.showHud;
@@ -872,8 +1233,17 @@ async function bootstrap(): Promise<void> {
       boxVisible: cardboardBox.isVisible(),
       catCount: settings.catCount,
       breedMode: settings.breedMode,
+      kittenMode: settings.kittenMode,
+      collarColor: settings.collarColor,
+      collarBell: settings.collarBell,
+      soundEnabled: settings.soundEnabled,
+      soundVolume: settings.soundVolume,
       propsVisible: settings.showSceneProps,
       activeTreatsCount: 0,
+      activeToysCount: 0,
+      paperBagActive: false,
+      tapedSquareActive: false,
+      circadianPhase: lastTrackedCircadianPhase,
       hudVisible: settings.showHud,
       debugMode: settings.debugMode,
       visible: settings.showToyDock,
@@ -905,7 +1275,8 @@ async function bootstrap(): Promise<void> {
   refreshUiOverlays();
 
   // ============================================================================
-  // Crisp Priority Hit-Testing: UI Overlay -> Cat -> Interactive Prop -> Box/Yarn/Prism -> Floor Tap
+  // Crisp Priority Hit-Testing:
+  // UI Overlay -> Cat (sleeping startle jump / awake reaction) -> Toy -> Interactive Prop -> Box/Yarn/Prism -> Floor Tap
   // ============================================================================
 
   const pettingDetector = new PettingDetector();
@@ -924,16 +1295,22 @@ async function bootstrap(): Promise<void> {
     lastClickX = x;
     lastClickY = y;
 
-    // 1. Priority 1: Clicked Cat
+    // 1. Priority 1: Clicked Cat (sleeping cat wakes startled & jumps high into the air!)
     const clickedCat = hitTestCat(cats, x, y);
     if (clickedCat) {
       const sameCatDouble = isDoubleClick && lastClickedCatId === clickedCat.id;
       lastClickedCatId = clickedCat.id;
       const reaction = onCatClicked(clickedCat, sameCatDouble);
+      if (reaction.soundEvent) {
+        audioEngine.play(reaction.soundEvent);
+      } else {
+        audioEngine.play(clickedCat.isKitten() ? 'kitten_mew' : 'purr');
+      }
       hud.showInteractionToast({
         kind: 'cat',
         title: `${reaction.name} \u00b7 ${reaction.breedLabel}`,
         subtitle: reaction.caption,
+        friendshipLevel: reaction.friendshipLevel ?? clickedCat.getFriendshipLevel(),
         x: reaction.x,
         y: reaction.y,
       });
@@ -941,13 +1318,33 @@ async function bootstrap(): Promise<void> {
     }
     lastClickedCatId = null;
 
-    // 2. Priority 2: Clicked Interactive Scene Prop (or dropped treat / ambient butterfly)
+    // 2. Priority 2: Clicked Deployable Toy (mouse, fish, bubbles, feather, cucumber, paper bag, etc.)
+    const toyClick = toyManager.handlePointerClick(x, y, particleSystem);
+    if (toyClick) {
+      if (toyClick.soundEvent) {
+        audioEngine.play(toyClick.soundEvent);
+      }
+      hud.showInteractionToast({
+        kind: 'toy',
+        title: toyClick.title,
+        subtitle: toyClick.subtitle,
+        x: toyClick.toy.x,
+        y: toyClick.toy.y - toyClick.toy.radius - 8,
+      });
+      refreshUiOverlays();
+      return true;
+    }
+
+    // 3. Priority 3: Clicked Interactive Scene Prop (enlarged pond, tip-able plants, aquarium, litter box, etc.)
     if (scenePropsOverlay.isPropsEnabled()) {
       const propHit = scenePropsOverlay.handlePointerClick(x, y);
       if (propHit) {
         lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
         for (const burst of propHit.particles) {
           particleSystem.spawnPropBurst(burst);
+        }
+        if (propHit.soundEvent) {
+          audioEngine.play(propHit.soundEvent);
         }
 
         if (propHit.spawnedTreatPoint) {
@@ -966,7 +1363,8 @@ async function bootstrap(): Promise<void> {
             );
           });
           let lured = 0;
-          const maxLured = propHit.interactionType === 'catnip' ? 2 : 1;
+          const maxLured =
+            propHit.interactionType === 'catnip' || propHit.interactionType === 'drink' ? 2 : 1;
           for (const cat of sorted) {
             const state = cat.getState();
             if (state === 'BONK' || state === 'EATING_TREAT') continue;
@@ -985,30 +1383,35 @@ async function bootstrap(): Promise<void> {
           title: propHit.label,
           subtitle: propHit.feedbackText,
           x: propHit.prop.x,
-          y: propHit.prop.y - propHit.prop.radius,
+          y: propHit.prop.y - (propHit.prop.radiusY ?? propHit.prop.radius),
         });
         refreshUiOverlays();
         return true;
       }
     }
 
-    // 3. Priority 3: Tapping Box / Yarn / Prism directly (when not dragged)
+    // 4. Priority 4: Tapping Box / Yarn / Prism directly (when not dragged)
     if (yarnBall.containsPoint(x, y)) {
-      tossYarnAcrossFloor();
+      tossYarnAcrossFloor(x, y);
       return true;
     }
     if (cardboardBox.isVisible() && cardboardBox.containsPoint(x, y)) {
       cardboardBox.triggerFlapRustle(undefined, 1.0);
+      audioEngine.play('crinkle');
       const bp = cardboardBox.getPosition();
       particleSystem.spawnDustPuff(bp.x, bp.y, 0, -24);
       if (cardboardBox.occupantId !== null) {
         const occupant = cats.find((c) => c.id === cardboardBox.occupantId);
         if (occupant) {
           const reaction = onCatClicked(occupant, isDoubleClick);
+          if (reaction.soundEvent) {
+            audioEngine.play(reaction.soundEvent);
+          }
           hud.showInteractionToast({
             kind: 'cat',
             title: `${reaction.name} \u00b7 ${reaction.breedLabel}`,
             subtitle: reaction.caption,
+            friendshipLevel: reaction.friendshipLevel ?? occupant.getFriendshipLevel(),
             x: reaction.x,
             y: reaction.y,
           });
@@ -1030,14 +1433,13 @@ async function bootstrap(): Promise<void> {
       return true;
     }
 
-    // 4. Priority 4: Empty Floor Tap (double-click drops treat; single click triggers ripple & curious glance)
+    // 5. Priority 5: Empty Floor Tap (double-click drops treat; single click triggers ripple & curious glance)
     particleSystem.spawnClickRipple(x, y);
     if (isDoubleClick) {
       dropTreatAt(x, y, true);
       return true;
     }
 
-    // Cue nearest 1-2 cats for a curious glance or meerkat peek toward the floor tap
     const sorted = [...cats].sort((a, b) => {
       const pa = a.getPosition();
       const pb = b.getPosition();
@@ -1072,18 +1474,28 @@ async function bootstrap(): Promise<void> {
     if (e.button !== 0) {
       return;
     }
+    if (audioEngine.isEnabled()) {
+      void audioEngine.unlock();
+    }
     localLastActivityMs = performance.now();
     cursorPos.x = e.clientX;
     cursorPos.y = e.clientY;
     dock.dismissHint();
 
-    // Check Priority 1 (Cat) & Priority 2 (Interactive Scene Prop) immediately on pointerdown!
+    // Priority 1: Cat (immediately responds, including startled wake-jump!)
     const hitCat = hitTestCat(cats, e.clientX, e.clientY);
     if (hitCat) {
       handlePriorityCanvasClick(e.clientX, e.clientY);
       return;
     }
 
+    // Priority 2: Deployable Toy
+    if (toyManager.hitTestToy(e.clientX, e.clientY) !== null) {
+      handlePriorityCanvasClick(e.clientX, e.clientY);
+      return;
+    }
+
+    // Priority 3: Interactive Scene Prop
     if (
       scenePropsOverlay.isPropsEnabled() &&
       scenePropsOverlay.handlePointerMove(e.clientX, e.clientY) !== null
@@ -1092,7 +1504,7 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    // Check Priority 3 (Draggable Prism / Yarn / Cardboard Box)
+    // Priority 4: Draggable Prism / Yarn / Cardboard Box
     let kind: DragPropKind | null = null;
     let grabOffsetX = 0;
     let grabOffsetY = 0;
@@ -1134,7 +1546,7 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    // Priority 4: Floor tap
+    // Priority 5: Floor tap
     handlePriorityCanvasClick(e.clientX, e.clientY);
   });
 
@@ -1143,6 +1555,7 @@ async function bootstrap(): Promise<void> {
     localLastActivityMs = nowMs;
     cursorPos.x = e.clientX;
     cursorPos.y = e.clientY;
+    toyManager.setCursor(e.clientX, e.clientY, true);
 
     if (activeStageDrag && activeStageDrag.pointerId === e.pointerId) {
       const dtSec = Math.max(0.004, (nowMs - activeStageDrag.lastTimeMs) / 1000);
@@ -1163,7 +1576,7 @@ async function bootstrap(): Promise<void> {
       if (activeStageDrag.kind === 'prism') {
         prismLaser.setPrismPosition(targetX, targetY);
       } else if (activeStageDrag.kind === 'yarn') {
-        yarnBall.reset(
+        yarnBall.moveTo(
           clamp(targetX, 24, viewWidth - 24),
           clamp(targetY, 24, viewHeight - 24),
         );
@@ -1178,7 +1591,8 @@ async function bootstrap(): Promise<void> {
 
     const hoveredProp = scenePropsOverlay.handlePointerMove(e.clientX, e.clientY);
     const hoveredCat = hitTestCat(cats, e.clientX, e.clientY);
-    if (hoveredCat || hoveredProp) {
+    const hoveredToy = toyManager.hitTestToy(e.clientX, e.clientY);
+    if (hoveredCat || hoveredToy || hoveredProp) {
       app.canvas.style.cursor = 'pointer';
     } else if (
       prismLaser.containsPrismPoint(e.clientX, e.clientY) ||
@@ -1190,7 +1604,14 @@ async function bootstrap(): Promise<void> {
       app.canvas.style.cursor = '';
     }
 
-    pettingDetector.recordCursor(e.clientX, e.clientY, nowMs / 1000, cats, particleSystem);
+    pettingDetector.recordCursor(
+      e.clientX,
+      e.clientY,
+      nowMs / 1000,
+      cats,
+      particleSystem,
+      audioEngine,
+    );
   });
 
   const endStageDrag = (e: PointerEvent): void => {
@@ -1208,7 +1629,7 @@ async function bootstrap(): Promise<void> {
           clamp(activeStageDrag.vy, -900, 900),
         );
       } else {
-        tossYarnAcrossFloor();
+        tossYarnAcrossFloor(e.clientX, e.clientY);
       }
     } else if (wasTap && activeStageDrag.kind === 'box') {
       handlePriorityCanvasClick(e.clientX, e.clientY);
@@ -1286,6 +1707,7 @@ async function bootstrap(): Promise<void> {
     lightingOverlay.resize(viewWidth, viewHeight);
     lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
     prismLaser.resize(viewWidth, viewHeight);
+    toyManager.resize(viewWidth, viewHeight);
     mockIcons.resize(viewWidth, viewHeight);
 
     const yp = yarnBall.getPosition();
@@ -1301,18 +1723,48 @@ async function bootstrap(): Promise<void> {
     const prevBreedMode = settings.breedMode;
     const prevShowProps = settings.showSceneProps;
     const prevDebug = settings.debugMode;
+    const prevKitten = settings.kittenMode;
+    const prevCollarColor = settings.collarColor;
+    const prevCollarBell = settings.collarBell;
+    const prevSoundEnabled = settings.soundEnabled;
+    const prevSoundVolume = settings.soundVolume;
 
     Object.assign(settings, next);
+    settings.catCount = normalizeCatCount(next.catCount, settings.catCount);
     settings.sceneTheme = normalizeSceneTheme(next.sceneTheme);
     settings.breedMode = normalizeBreedMode(next.breedMode);
     settings.showSceneProps =
       typeof next.showSceneProps === 'boolean' ? next.showSceneProps : true;
+    settings.kittenMode = typeof next.kittenMode === 'boolean' ? next.kittenMode : false;
+    settings.collarColor = typeof next.collarColor === 'string' ? next.collarColor : null;
+    settings.collarBell = typeof next.collarBell === 'boolean' ? next.collarBell : true;
+    settings.soundEnabled = typeof next.soundEnabled === 'boolean' ? next.soundEnabled : false;
+    settings.soundVolume =
+      typeof next.soundVolume === 'number' && Number.isFinite(next.soundVolume)
+        ? clamp(next.soundVolume, 0, 1)
+        : DEFAULT_SETTINGS.soundVolume;
 
     if (settings.breedMode !== prevBreedMode) {
       syncCatCount(settings.catCount, true);
     } else if (settings.catCount !== prevCatCount) {
       syncCatCount(settings.catCount, false);
     }
+
+    if (
+      settings.kittenMode !== prevKitten ||
+      settings.collarColor !== prevCollarColor ||
+      settings.collarBell !== prevCollarBell
+    ) {
+      syncCatCustomizationToPack();
+    }
+
+    if (settings.soundEnabled !== prevSoundEnabled) {
+      audioEngine.setEnabled(settings.soundEnabled);
+    }
+    if (settings.soundVolume !== prevSoundVolume) {
+      audioEngine.setVolume(settings.soundVolume);
+    }
+
     if (settings.sceneTheme !== prevSceneTheme) {
       hardwoodFloor.setTheme(settings.sceneTheme);
       rugOverlay.setTheme(settings.sceneTheme);
@@ -1384,13 +1836,21 @@ async function bootstrap(): Promise<void> {
       case 'MOUSE_RAW': {
         cursorPos.x = msg.x;
         cursorPos.y = msg.y;
+        toyManager.setCursor(msg.x, msg.y, true);
         if (hostLaserActive !== msg.laserMode) {
           lastHostLaserSyncMs = performance.now();
         }
         hostLaserActive = msg.laserMode;
         hostSplitPrism = msg.splitPrism;
         scenePropsOverlay.handlePointerMove(msg.x, msg.y);
-        pettingDetector.recordCursor(msg.x, msg.y, performance.now() / 1000, cats, particleSystem);
+        pettingDetector.recordCursor(
+          msg.x,
+          msg.y,
+          performance.now() / 1000,
+          cats,
+          particleSystem,
+          audioEngine,
+        );
         refreshUiOverlays();
         break;
       }
@@ -1436,6 +1896,23 @@ async function bootstrap(): Promise<void> {
         hostKeysPerMinute = msg.keysPerMinute;
         hostIdleSeconds = msg.idleSeconds;
         lastHostTypingAtMs = performance.now();
+        break;
+      }
+
+      case 'WINDOW_LEDGES_UPDATE': {
+        windowLedges = {
+          taskbarRect: msg.taskbarRect ?? null,
+          windowTopLedges: Array.isArray(msg.windowTopLedges) ? msg.windowTopLedges : [],
+        };
+        break;
+      }
+
+      case 'AUDIO_ACTIVITY': {
+        if (msg.level >= 0.15) {
+          for (const cat of cats) {
+            cat.triggerSoundAlert(msg.level, msg.sourceX);
+          }
+        }
         break;
       }
 
@@ -1486,6 +1963,45 @@ async function bootstrap(): Promise<void> {
             setScenePropsVisible(!settings.showSceneProps, true);
             break;
           }
+          case 'dropMouse':
+            dropOrToggleToy('mouse_toy');
+            break;
+          case 'dropFish':
+            dropOrToggleToy('fish_toy');
+            break;
+          case 'dropFeather':
+            dropOrToggleToy('feather_wand');
+            break;
+          case 'dropCrinkle':
+            dropOrToggleToy('crinkle_ball');
+            break;
+          case 'dropSpring':
+            dropOrToggleToy('spring_toy');
+            break;
+          case 'dropPingPong':
+            dropOrToggleToy('ping_pong');
+            break;
+          case 'dropHairTie':
+            dropOrToggleToy('hair_tie');
+            break;
+          case 'dropBubbles':
+            dropOrToggleToy('bubbles');
+            break;
+          case 'dropCucumber':
+            dropOrToggleToy('cucumber');
+            break;
+          case 'togglePaperBag':
+            dropOrToggleToy('paper_bag');
+            break;
+          case 'toggleTapedSquare':
+            dropOrToggleToy('taped_square');
+            break;
+          case 'clearToys':
+            clearAllToys(true);
+            break;
+          case 'photoSnapshot':
+            void triggerPhotoSnapshot();
+            break;
         }
         break;
       }
@@ -1499,13 +2015,13 @@ async function bootstrap(): Promise<void> {
         handleHostMessage(parsed);
       }
     });
-    postToHost({ type: 'READY', rendererVersion: '0.2.0' });
+    postToHost({ type: 'READY', rendererVersion: '2.0.0' });
   }
 
   function sendStatsUpdate(): void {
     let nappingCats = 0;
     for (const cat of cats) {
-      if (cat.getState() === 'NAP' || cat.getState() === 'SUNBATHE') {
+      if (cat.isSleeping() || cat.getState() === 'SUNBATHE') {
         nappingCats++;
       }
     }
@@ -1517,6 +2033,76 @@ async function bootstrap(): Promise<void> {
       nappingCats,
       paused,
     });
+  }
+
+  // Spatial bucket separation for O(N) performance when deploying 40..100+ cats
+  const spatialBuckets = new Map<number, CatEntity[]>();
+
+  function resolveCatPackSeparation(): void {
+    const count = cats.length;
+    if (count < 2) return;
+
+    if (count <= 40) {
+      for (let i = 0; i < count; i++) {
+        const catA = cats[i];
+        if (isCatCollisionExempt(catA.getState())) continue;
+        for (let j = i + 1; j < count; j++) {
+          const catB = cats[j];
+          if (isCatCollisionExempt(catB.getState())) continue;
+          if (isCatRestingForSeparation(catA) && isCatRestingForSeparation(catB)) continue;
+          physics.resolveCircleCircle(catA.getBody(), catB.getBody(), 0.45);
+        }
+      }
+      return;
+    }
+
+    const cellSize = 60;
+    spatialBuckets.clear();
+    for (let i = 0; i < count; i++) {
+      const cat = cats[i];
+      if (isCatCollisionExempt(cat.getState())) continue;
+      const pos = cat.getPosition();
+      const cx = Math.floor(pos.x / cellSize);
+      const cy = Math.floor(pos.y / cellSize);
+      const key = ((cx + 512) << 12) | (cy + 512);
+      let bucket = spatialBuckets.get(key);
+      if (!bucket) {
+        bucket = [];
+        spatialBuckets.set(key, bucket);
+      }
+      bucket.push(cat);
+    }
+
+    for (const [key, bucket] of spatialBuckets) {
+      const cx = (key >> 12) - 512;
+      const cy = (key & 0xfff) - 512;
+      for (let ox = 0; ox <= 1; ox++) {
+        for (let oy = -1; oy <= 1; oy++) {
+          if (ox === 0 && oy < 0) continue;
+          const neighborKey = ((cx + ox + 512) << 12) | (cy + oy + 512);
+          const otherBucket = ox === 0 && oy === 0 ? bucket : spatialBuckets.get(neighborKey);
+          if (!otherBucket) continue;
+
+          if (otherBucket === bucket) {
+            for (let i = 0; i < bucket.length; i++) {
+              const catA = bucket[i];
+              for (let j = i + 1; j < bucket.length; j++) {
+                const catB = bucket[j];
+                if (isCatRestingForSeparation(catA) && isCatRestingForSeparation(catB)) continue;
+                physics.resolveCircleCircle(catA.getBody(), catB.getBody(), 0.42);
+              }
+            }
+          } else {
+            for (const catA of bucket) {
+              for (const catB of otherBucket) {
+                if (isCatRestingForSeparation(catA) && isCatRestingForSeparation(catB)) continue;
+                physics.resolveCircleCircle(catA.getBody(), catB.getBody(), 0.42);
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   // Main simulation tick with FPS cap accumulator
@@ -1546,6 +2132,14 @@ async function bootstrap(): Promise<void> {
 
     const nowMs = performance.now();
 
+    // Update ambient & interactive scene props (large pond koi, moving sunbeam, rain/snow, aquarium fish, treats)
+    scenePropsOverlay.update(stepDt);
+
+    // Sync warm zones continuously for moving sunbeams / flickering hearths
+    if (settings.sceneTheme === 'sunbeam' || settings.sceneTheme === 'living_room') {
+      lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
+    }
+
     // Update lighting atmosphere & sync icon mats if auto mode shifts period
     lightingOverlay.update(stepDt);
     const effectiveLighting = lightingOverlay.getEffectiveLighting();
@@ -1558,8 +2152,14 @@ async function bootstrap(): Promise<void> {
       refreshUiOverlays();
     }
 
-    // Update ambient & interactive scene props (koi fish, butterflies, steam wisps, sakura petals, treats)
-    scenePropsOverlay.update(stepDt);
+    // Update deployable toys physics & drain toy sound events
+    toyManager.update(stepDt, physics, particleSystem);
+    const toyEvents = toyManager.drainEvents();
+    for (const ev of toyEvents) {
+      if (ev.soundEvent) {
+        audioEngine.play(ev.soundEvent);
+      }
+    }
 
     // Update cardboard box flap flex & recoil springs
     cardboardBox.update(stepDt);
@@ -1574,14 +2174,20 @@ async function bootstrap(): Promise<void> {
 
     const splitActive = prismLaser.isSplitActive();
     const currentTreatsCount = scenePropsOverlay.getActiveTreats().length;
+    const currentToysCount = toyManager.getActiveCount();
+    const currentCircadianPhase = getCircadianPhase();
     if (
       laserActive !== lastHudLaserActive ||
       splitActive !== lastHudSplitPrism ||
-      currentTreatsCount !== lastTrackedTreatCount
+      currentTreatsCount !== lastTrackedTreatCount ||
+      currentToysCount !== lastTrackedToyCount ||
+      currentCircadianPhase !== lastTrackedCircadianPhase
     ) {
       lastHudLaserActive = laserActive;
       lastHudSplitPrism = splitActive;
       lastTrackedTreatCount = currentTreatsCount;
+      lastTrackedToyCount = currentToysCount;
+      lastTrackedCircadianPhase = currentCircadianPhase;
       refreshUiOverlays();
     }
 
@@ -1612,7 +2218,7 @@ async function bootstrap(): Promise<void> {
     if (!laserActive && scenePropsOverlay.isPropsEnabled()) {
       sceneCuriosityTimer -= stepDt;
       if (sceneCuriosityTimer <= 0) {
-        sceneCuriosityTimer = 12 + Math.random() * 9;
+        sceneCuriosityTimer = 11 + Math.random() * 8;
         const props = scenePropsOverlay.getInteractiveProps();
         if (props.length > 0 && cats.length > 0) {
           const prop = props[sceneCuriosityCursor % props.length];
@@ -1629,7 +2235,7 @@ async function bootstrap(): Promise<void> {
       yarnBall.update(stepDt, physics, particleSystem);
     }
 
-    // Update all cats with full world, prop, warm-zone, treat, critter & social context
+    // Update all cats with full v2.0 brain, toy, prop, warm-zone, ledge & audio context
     const catCtx: CatContext = {
       physics,
       surfaceManager,
@@ -1641,6 +2247,8 @@ async function bootstrap(): Promise<void> {
       warmZones: scenePropsOverlay.getWarmZones(),
       activeTreats: scenePropsOverlay.getActiveTreats(),
       ambientCritters: scenePropsOverlay.getAmbientCritters(),
+      toys: toyManager.getToys(),
+      windowLedges,
       otherCats: cats,
       cursorPos,
       particles: particleSystem,
@@ -1649,6 +2257,13 @@ async function bootstrap(): Promise<void> {
       typingActive,
       nightMode: effectiveLighting === 'night',
       occupiedIconIds,
+      catCount: cats.length,
+      isKittenMode: settings.kittenMode,
+      collarColor: settings.collarColor,
+      collarBell: settings.collarBell,
+      onSound: (event) => {
+        audioEngine.play(event);
+      },
       onPounce: () => {
         pounces++;
         refreshUiOverlays();
@@ -1668,12 +2283,42 @@ async function bootstrap(): Promise<void> {
         for (const burst of bursts) {
           particleSystem.spawnPropBurst(burst);
         }
+        const prop = scenePropsOverlay.getPropById(propId);
+        if (prop?.soundEvent) {
+          audioEngine.play(prop.soundEvent);
+        }
         lightingOverlay.setWarmZones(scenePropsOverlay.getWarmZones());
       },
       onConsumeTreat: (treatId, cat) => {
         const finished = scenePropsOverlay.consumeTreatBite(treatId, cat.id);
+        audioEngine.play('crunch');
         refreshUiOverlays();
         return finished;
+      },
+      onBatToy: (toyId, vx, vy, catId) => {
+        toyManager.batToy(toyId, vx, vy, catId);
+      },
+      onCarryToy: (toyId, catId, carryX, carryY, rotation) => {
+        if (catId === null) {
+          toyManager.setToyCarried(toyId, null, carryX, carryY);
+        } else {
+          const existing = toyManager.getToyById(toyId);
+          if (existing && existing.isCarriedByCatId !== catId) {
+            toyManager.setToyCarried(toyId, catId, carryX, carryY);
+          } else if (carryX !== undefined && carryY !== undefined) {
+            toyManager.updateCarriedToyPosition(toyId, carryX, carryY, rotation);
+          }
+        }
+      },
+      onPopBubble: (toyId) => {
+        if (toyManager.popBubble(toyId, particleSystem)) {
+          audioEngine.play('bubble_pop');
+        }
+      },
+      onConsumeToy: (toyId) => {
+        if (toyManager.consumeToy(toyId)) {
+          refreshUiOverlays();
+        }
       },
     };
 
@@ -1685,21 +2330,8 @@ async function bootstrap(): Promise<void> {
       }
     }
 
-    // Pairwise cat-cat collision separation (skip airborne, box, and icon-perched cats)
-    for (let i = 0; i < cats.length; i++) {
-      const catA = cats[i];
-      const stateA = catA.getState();
-      if (isCatCollisionExempt(stateA)) continue;
-      for (let j = i + 1; j < cats.length; j++) {
-        const catB = cats[j];
-        const stateB = catB.getState();
-        if (isCatCollisionExempt(stateB)) continue;
-        if ((stateA === 'NAP' || stateA === 'SUNBATHE') && (stateB === 'NAP' || stateB === 'SUNBATHE')) {
-          continue;
-        }
-        physics.resolveCircleCircle(catA.getBody(), catB.getBody(), 0.45);
-      }
-    }
+    // Scalable cat-cat collision separation
+    resolveCatPackSeparation();
 
     // Update particles
     particleSystem.update(stepDt);
@@ -1716,7 +2348,10 @@ async function bootstrap(): Promise<void> {
         rug: surfaceManager.getRugBounds(),
         props: scenePropsOverlay.getInteractiveProps(),
         treats: scenePropsOverlay.getActiveTreats(),
+        toys: toyManager.getToys(),
         warmZones: scenePropsOverlay.getWarmZones(),
+        windowLedges,
+        circadianPhase: currentCircadianPhase,
         cats: cats.map((cat) => {
           const pos = cat.getPosition();
           const vel = cat.getVelocity();
@@ -1732,6 +2367,11 @@ async function bootstrap(): Promise<void> {
             breed: cat.getBreed(),
             mood: cat.getMood(),
             personality: cat.getPersonality(),
+            archetype: cat.getArchetype(),
+            needs: cat.getNeeds(),
+            isKitten: cat.isKitten(),
+            friendshipLevel: cat.getFriendshipLevel(),
+            sleepIndicator: cat.getSleepIndicatorText(),
             activePropId: cat.getActivePropId(),
             zHeight: cat.getZHeight(),
             perchedIconId: cat.getPerchedIconId(),
@@ -1776,7 +2416,7 @@ async function bootstrap(): Promise<void> {
     getStateSummary: () => {
       let nappingCats = 0;
       for (const cat of cats) {
-        if (cat.getState() === 'NAP' || cat.getState() === 'SUNBATHE') {
+        if (cat.isSleeping() || cat.getState() === 'SUNBATHE') {
           nappingCats++;
         }
       }
@@ -1795,9 +2435,16 @@ async function bootstrap(): Promise<void> {
         breedMode: settings.breedMode,
         showSceneProps: settings.showSceneProps,
         activeTreatsCount: scenePropsOverlay.getActiveTreats().length,
+        activeToysCount: toyManager.getActiveCount(),
         interactivePropsCount: scenePropsOverlay.getInteractiveProps().length,
         nativeHostConnected,
         fpsCap: settings.fpsCap,
+        kittenMode: settings.kittenMode,
+        collarColor: settings.collarColor,
+        collarBell: settings.collarBell,
+        soundEnabled: settings.soundEnabled,
+        soundVolume: settings.soundVolume,
+        circadianPhase: getCircadianPhase(),
       };
     },
     getCats: () =>
@@ -1809,7 +2456,13 @@ async function bootstrap(): Promise<void> {
           name: cat.getName(),
           breed: cat.getBreed(),
           mood: cat.getMood(),
+          archetype: cat.getArchetype(),
+          needs: cat.getNeeds(),
           personality: cat.getPersonality(),
+          isKitten: cat.isKitten(),
+          friendshipLevel: cat.getFriendshipLevel(),
+          isSleeping: cat.isSleeping(),
+          sleepIndicator: cat.getSleepIndicatorText(),
           activePropId: cat.getActivePropId(),
           state: cat.getState(),
           x: pos.x,
@@ -1822,6 +2475,7 @@ async function bootstrap(): Promise<void> {
       }),
     getObstacles: () => physics.getObstacles().map((obs) => ({ ...obs })),
     getInteractiveProps: () => scenePropsOverlay.getInteractiveProps(),
+    getToys: () => toyManager.getToys(),
     isSplitPrism: () => prismLaser.isSplitActive(),
     getLighting: () => ({
       mode: settings.lightingMode,
@@ -1830,8 +2484,15 @@ async function bootstrap(): Promise<void> {
     dropTreat: (x?: number, y?: number) => {
       dropTreatAt(x, y, true);
     },
+    dropToy: (kind: ToyKind, x?: number, y?: number) => {
+      dropOrToggleToy(kind, x, y, true);
+    },
+    clearToys: () => {
+      clearAllToys(true);
+    },
     clickAt: (x: number, y: number, doubleClick?: boolean) =>
       handlePriorityCanvasClick(x, y, doubleClick),
+    takePhoto: () => triggerPhotoSnapshot(),
   });
 
   Object.defineProperty(window, '__NEKOSCAPE__', {

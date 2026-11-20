@@ -23,6 +23,7 @@ export class PrismLaser extends Container {
   private splitActive = false;
   private activeTargets: LaserTarget[] = [];
   private phase = 0;
+  private activeDurationSec = 0;
 
   constructor(width: number, height: number, prismX?: number, prismY?: number) {
     super();
@@ -74,7 +75,11 @@ export class PrismLaser extends Container {
   setCursor(x: number, y: number, active: boolean, forceSplit = false): void {
     this.cursorPos.x = x;
     this.cursorPos.y = y;
+    const wasActive = this.active;
     this.active = active;
+    if (!active || !wasActive) {
+      this.activeDurationSec = 0;
+    }
     this.forceSplit = forceSplit;
     this.recomputeTargets();
   }
@@ -106,6 +111,17 @@ export class PrismLaser extends Container {
     return this.active;
   }
 
+  /**
+   * Returns continuous active laser chase duration in seconds (0 when inactive).
+   */
+  getActiveDuration(): number {
+    return this.active ? this.activeDurationSec : 0;
+  }
+
+  resetActiveDuration(): void {
+    this.activeDurationSec = 0;
+  }
+
   containsPrismPoint(x: number, y: number): boolean {
     return Math.hypot(x - this.prismPos.x, y - this.prismPos.y) <= PRISM_RADIUS + 10;
   }
@@ -113,6 +129,11 @@ export class PrismLaser extends Container {
   update(dt: number): void {
     const safeDt = Math.max(0, Math.min(dt, 0.1));
     this.phase += safeDt;
+    if (this.active) {
+      this.activeDurationSec += safeDt;
+    } else {
+      this.activeDurationSec = 0;
+    }
     this.render(0);
   }
 

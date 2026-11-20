@@ -55,8 +55,9 @@ export function resolveEffectiveMode(
 }
 
 /**
- * Sun- and theme-synced atmosphere overlay: window panes, shoji lattice grids,
- * dappled courtyard canopy shafts + fireflies, and cozy cafe pendant pools.
+ * Sun- and theme-synced atmosphere overlay across all 13 NekoScape v2.0 scenes:
+ * window panes, shoji lattice grids, dappled courtyard shafts, rain-streaked glass,
+ * snowy drift, sunset terrace wash, aquarium shimmer, and dynamic warm-zone pools.
  */
 export class LightingOverlay extends Container {
   private mode: LightingMode;
@@ -118,8 +119,8 @@ export class LightingOverlay extends Container {
   }
 
   /**
-   * Synchronizes dynamic warm light pools (e.g., clickable Brass Desk Lamp or Paper Andon Lantern)
-   * with smooth fade-in / fade-out transitions.
+   * Synchronizes dynamic warm light pools (lamps, lanterns, fireplace, radiator, laptops,
+   * string lights, and the moving sunbeam patch) with smooth fade-in / fade-out transitions.
    */
   setWarmZones(zones: readonly WarmZone[]): void {
     this.externalWarmZones = zones.map((z) => ({ ...z }));
@@ -247,11 +248,19 @@ export class LightingOverlay extends Container {
 
     const w = this.viewWidth;
     const h = this.viewHeight;
-    const isFireflyNight = this.theme === 'garden' && this.effectiveMode === 'night';
-    const alphaMult = SCENE_THEME_DEFS[this.theme].lighting.moteAlphaMult[this.effectiveMode];
+    const def = SCENE_THEME_DEFS[this.theme] ?? SCENE_THEME_DEFS.study;
+    const isFireflyNight =
+      (this.theme === 'garden' || this.theme === 'night_balcony' || this.theme === 'rooftop') &&
+      this.effectiveMode === 'night';
+    const isSnow = this.theme === 'snowy_window';
+    const alphaMult = def.lighting.moteAlphaMult[this.effectiveMode];
 
     for (const mote of this.motes) {
-      if (isFireflyNight) {
+      if (isSnow) {
+        const sway = Math.sin(this.time * 1.15 + mote.phase) * 10;
+        mote.x += (mote.vx * 0.28 + sway) * safeDt;
+        mote.y += (Math.abs(mote.vy) * 1.8 + 14) * safeDt;
+      } else if (isFireflyNight) {
         const wanderX = Math.sin(this.time * 0.9 + mote.phase) * 9;
         const wanderY = Math.cos(this.time * 0.72 + mote.phase * 1.4) * 7.5;
         mote.x += (mote.vx * 0.45 + wanderX) * safeDt;
@@ -284,7 +293,7 @@ export class LightingOverlay extends Container {
   }
 
   private applyWarmZoneVisuals(dt: number): void {
-    const propsPalette = SCENE_THEME_DEFS[this.theme].props;
+    const propsPalette = (SCENE_THEME_DEFS[this.theme] ?? SCENE_THEME_DEFS.study).props;
     const modeBoost =
       this.effectiveMode === 'night'
         ? 0.62
@@ -305,8 +314,10 @@ export class LightingOverlay extends Container {
         continue;
       }
 
+      const isSunbeam = id.includes('sunbeam');
+      const effectiveBoost = isSunbeam ? Math.max(modeBoost, 0.56) : modeBoost;
       const breathe = 1 + Math.sin(this.time * 2.4 + slot.phase) * 0.045;
-      const eff = Math.max(0, slot.currentIntensity) * modeBoost;
+      const eff = Math.max(0, slot.currentIntensity) * effectiveBoost;
 
       slot.outerSprite.position.set(slot.x, slot.y);
       slot.outerSprite.width = slot.radius * 2.5 * breathe;
@@ -376,10 +387,12 @@ export class LightingOverlay extends Container {
   }
 
   private recolorMotes(): void {
-    const cfg = SCENE_THEME_DEFS[this.theme].lighting;
+    const cfg = (SCENE_THEME_DEFS[this.theme] ?? SCENE_THEME_DEFS.study).lighting;
     const tint = cfg.moteTints[this.effectiveMode];
     const alphaMult = cfg.moteAlphaMult[this.effectiveMode];
-    const isFireflyNight = this.theme === 'garden' && this.effectiveMode === 'night';
+    const isFireflyNight =
+      (this.theme === 'garden' || this.theme === 'night_balcony' || this.theme === 'rooftop') &&
+      this.effectiveMode === 'night';
 
     for (const mote of this.motes) {
       mote.gfx.tint = tint;
@@ -406,7 +419,7 @@ export class LightingOverlay extends Container {
     const bCtx = beamCanvas.getContext('2d');
 
     if (gCtx && bCtx) {
-      const def = SCENE_THEME_DEFS[this.theme];
+      const def = SCENE_THEME_DEFS[this.theme] ?? SCENE_THEME_DEFS.study;
       if (this.effectiveMode === 'day') {
         this.paintDay(gCtx, bCtx, w, h, def);
       } else if (this.effectiveMode === 'golden') {
@@ -512,6 +525,23 @@ export class LightingOverlay extends Container {
       case 'cafe':
         this.drawCafeStorefrontBeams(gCtx, bCtx, w, h, startColor, midColor, endColor);
         break;
+      case 'rainy_window':
+      case 'snowy_window':
+        this.drawTopWindowWash(bCtx, w, h, startColor, midColor, endColor);
+        break;
+      case 'night_balcony':
+      case 'rooftop':
+        this.drawHorizonWash(bCtx, w, h, startColor, midColor, endColor);
+        break;
+      case 'aquarium':
+        this.drawWarmPool(bCtx, w * 0.72, h * 0.22, Math.min(w, h) * 0.44, startColor, midColor, endColor);
+        break;
+      case 'sunbeam':
+        this.drawWindowShafts(bCtx, w, h, startColor, midColor, endColor);
+        break;
+      case 'living_room':
+      case 'kitchen':
+      case 'bedroom':
       case 'study':
       default:
         this.drawWindowShafts(bCtx, w, h, startColor, midColor, endColor);
@@ -544,7 +574,6 @@ export class LightingOverlay extends Container {
     gCtx.fillStyle = moonGrad;
     gCtx.fillRect(0, 0, w, h);
 
-    // Subtle cool moon wash from top-right
     const moonBeam = bCtx.createLinearGradient(w * 0.85, 0, w * 0.4, h * 0.75);
     moonBeam.addColorStop(0, def.lighting.nightCoolShaft);
     moonBeam.addColorStop(1, 'rgba(136, 168, 224, 0)');
@@ -558,7 +587,6 @@ export class LightingOverlay extends Container {
     bCtx.fill();
 
     if (this.theme === 'tatami') {
-      // Primary warm paper lantern (andon) glow + secondary subtle lantern corner halo
       this.drawWarmPool(
         bCtx,
         cx,
@@ -578,7 +606,6 @@ export class LightingOverlay extends Container {
         def.lighting.nightPoolEdge,
       );
     } else if (this.theme === 'cafe') {
-      // Three cozy cafe Edison pendant light pools across lounge & tables
       this.drawWarmPool(
         bCtx,
         cx,
@@ -607,7 +634,6 @@ export class LightingOverlay extends Container {
         def.lighting.nightPoolEdge,
       );
     } else if (this.theme === 'garden') {
-      // Warm stone-garden lantern pool near courtyard edge & soft center moon glow
       this.drawWarmPool(
         bCtx,
         w * 0.24,
@@ -626,8 +652,17 @@ export class LightingOverlay extends Container {
         'rgba(140, 180, 216, 0.03)',
         'rgba(140, 180, 216, 0)',
       );
+    } else if (this.theme === 'aquarium') {
+      this.drawWarmPool(
+        bCtx,
+        w * 0.72,
+        h * 0.24,
+        lampRadius * 0.85,
+        def.lighting.nightPoolInner,
+        def.lighting.nightPoolMid,
+        def.lighting.nightPoolEdge,
+      );
     } else {
-      // Warm circular amber study desk-lamp glow pool over center rug
       this.drawWarmPool(
         bCtx,
         cx,
@@ -655,6 +690,38 @@ export class LightingOverlay extends Container {
     glow.addColorStop(1, edge);
     ctx.fillStyle = glow;
     ctx.fillRect(0, 0, this.viewWidth, this.viewHeight);
+  }
+
+  private drawTopWindowWash(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    startColor: string,
+    midColor: string,
+    endColor: string,
+  ): void {
+    const grad = ctx.createLinearGradient(0, 0, 0, h * 0.72);
+    grad.addColorStop(0, startColor);
+    grad.addColorStop(0.5, midColor);
+    grad.addColorStop(1, endColor);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h * 0.72);
+  }
+
+  private drawHorizonWash(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    startColor: string,
+    midColor: string,
+    endColor: string,
+  ): void {
+    const grad = ctx.createLinearGradient(0, 0, w * 0.4, h * 0.85);
+    grad.addColorStop(0, startColor);
+    grad.addColorStop(0.55, midColor);
+    grad.addColorStop(1, endColor);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
   }
 
   private drawWindowShafts(
@@ -701,7 +768,6 @@ export class LightingOverlay extends Container {
     midColor: string,
     endColor: string,
   ): void {
-    // Broad warm shoji screen sun wash
     const washGrad = ctx.createLinearGradient(w * 0.15, 0, w * 0.65, h * 0.95);
     washGrad.addColorStop(0, startColor);
     washGrad.addColorStop(0.68, midColor);
@@ -716,7 +782,6 @@ export class LightingOverlay extends Container {
     ctx.closePath();
     ctx.fill();
 
-    // Soft kumiko lattice bars carved out with gentle feathered destination-out
     ctx.save();
     ctx.globalCompositeOperation = 'destination-out';
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.78)';
@@ -758,7 +823,6 @@ export class LightingOverlay extends Container {
   ): void {
     const rng = createSeededRng(33409);
 
-    // Subtle olive canopy shadow pockets on grade layer
     for (let i = 0; i < 8; i++) {
       const sx = rng() * w;
       const sy = rng() * h;
@@ -770,10 +834,8 @@ export class LightingOverlay extends Container {
       gCtx.fillRect(0, 0, w, h);
     }
 
-    // Broad warm courtyard shafts
     this.drawWindowShafts(bCtx, w, h, startColor, midColor, endColor);
 
-    // Carve soft dappled foliage shadow cutouts inside beams
     bCtx.save();
     bCtx.globalCompositeOperation = 'destination-out';
     const holeCount = 26;
@@ -792,7 +854,6 @@ export class LightingOverlay extends Container {
     }
     bCtx.restore();
 
-    // Soft warm sun-flecks breaking through canopy leaves
     for (let i = 0; i < 16; i++) {
       const fx = w * (0.08 + rng() * 0.84);
       const fy = h * (0.08 + rng() * 0.8);
@@ -816,14 +877,12 @@ export class LightingOverlay extends Container {
     midColor: string,
     endColor: string,
   ): void {
-    // Gentle cafe awning shade along upper edge
     const awningGrad = gCtx.createLinearGradient(0, 0, 0, h * 0.22);
     awningGrad.addColorStop(0, 'rgba(42, 26, 18, 0.14)');
     awningGrad.addColorStop(1, 'rgba(42, 26, 18, 0)');
     gCtx.fillStyle = awningGrad;
     gCtx.fillRect(0, 0, w, h * 0.22);
 
-    // Two wide warm storefront window beams
     const panes = [
       { topX0: 0.04 * w, topX1: 0.36 * w, botX0: 0.22 * w, botX1: 0.62 * w },
       { topX0: 0.4 * w, topX1: 0.72 * w, botX0: 0.66 * w, botX1: 1.02 * w },

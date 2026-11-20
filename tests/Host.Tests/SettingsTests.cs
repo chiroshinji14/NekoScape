@@ -61,7 +61,7 @@ public sealed class SettingsTests : IDisposable
     }
 
     [Fact]
-    public void RepositoryDefaultSettingsJson_MatchesCanonical13FieldContract()
+    public void RepositoryDefaultSettingsJson_MatchesCanonical18FieldContract()
     {
         string configDir = AppSettingsStore.ResolveDefaultConfigDirectory();
         string defaultPath = Path.Combine(configDir, "default-settings.json");
@@ -82,6 +82,11 @@ public sealed class SettingsTests : IDisposable
         Assert.Equal("study", root.GetProperty("sceneTheme").GetString());
         Assert.Equal("mix", root.GetProperty("breedMode").GetString());
         Assert.True(root.GetProperty("showSceneProps").GetBoolean());
+        Assert.False(root.GetProperty("kittenMode").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("collarColor").ValueKind);
+        Assert.True(root.GetProperty("collarBell").GetBoolean());
+        Assert.False(root.GetProperty("soundEnabled").GetBoolean());
+        Assert.Equal(0.45, root.GetProperty("soundVolume").GetDouble(), precision: 2);
     }
 
     [Fact]
@@ -122,7 +127,7 @@ public sealed class SettingsTests : IDisposable
     }
 
     [Fact]
-    public void Save_ClampsBounds_PersistsCamelCaseJson_AndUpdatesStartupRegistry()
+    public void Save_AllowsUnlimitedCatCounts_ClampsBounds_PersistsCamelCaseJson_AndUpdatesStartupRegistry()
     {
         var store = new AppSettingsStore(_configDir, _fakeRegistry, @"C:\Apps\NekoScape.exe", _fallbackDir);
 
@@ -140,36 +145,94 @@ public sealed class SettingsTests : IDisposable
             LightingMode = "AUTO",
             SceneTheme = "TATAMI",
             BreedMode = "SIAMESE",
-            ShowSceneProps = false
+            ShowSceneProps = false,
+            KittenMode = true,
+            CollarColor = "#D94F5C",
+            CollarBell = false,
+            SoundEnabled = true,
+            SoundVolume = 1.5
         });
 
-        Assert.Equal(12, saved.CatCount);
+        Assert.Equal(99, saved.CatCount);
         Assert.Equal(0, saved.FpsCap);
         Assert.Equal(1, saved.IdleNapMinutes);
         Assert.Equal("auto", saved.LightingMode);
         Assert.Equal("tatami", saved.SceneTheme);
         Assert.Equal("siamese", saved.BreedMode);
         Assert.False(saved.ShowSceneProps);
+        Assert.True(saved.KittenMode);
+        Assert.Equal("#d94f5c", saved.CollarColor);
+        Assert.False(saved.CollarBell);
+        Assert.True(saved.SoundEnabled);
+        Assert.Equal(1.0, saved.SoundVolume);
         Assert.True(_fakeRegistry.Enabled);
         Assert.Equal(@"C:\Apps\NekoScape.exe", _fakeRegistry.ExecutablePath);
 
         string json = File.ReadAllText(store.UserSettingsPath);
         using JsonDocument doc = JsonDocument.Parse(json);
-        Assert.Equal(12, doc.RootElement.GetProperty("catCount").GetInt32());
+        Assert.Equal(99, doc.RootElement.GetProperty("catCount").GetInt32());
         Assert.Equal(0, doc.RootElement.GetProperty("fpsCap").GetInt32());
         Assert.True(doc.RootElement.GetProperty("launchAtStartup").GetBoolean());
         Assert.Equal("auto", doc.RootElement.GetProperty("lightingMode").GetString());
         Assert.Equal("tatami", doc.RootElement.GetProperty("sceneTheme").GetString());
         Assert.Equal("siamese", doc.RootElement.GetProperty("breedMode").GetString());
         Assert.False(doc.RootElement.GetProperty("showSceneProps").GetBoolean());
+        Assert.True(doc.RootElement.GetProperty("kittenMode").GetBoolean());
+        Assert.Equal("#d94f5c", doc.RootElement.GetProperty("collarColor").GetString());
+        Assert.False(doc.RootElement.GetProperty("collarBell").GetBoolean());
+        Assert.True(doc.RootElement.GetProperty("soundEnabled").GetBoolean());
+        Assert.Equal(1.0, doc.RootElement.GetProperty("soundVolume").GetDouble());
 
-        NekoSettings invalidThemes = store.Save(new NekoSettings { LightingMode = "invalid", SceneTheme = "unknown", BreedMode = "dragon" });
+        NekoSettings invalidThemes = store.Save(new NekoSettings
+        {
+            CatCount = -5,
+            LightingMode = "invalid",
+            SceneTheme = "unknown",
+            BreedMode = "dragon",
+            CollarColor = "none",
+            SoundVolume = -0.3
+        });
+        Assert.Equal(1, invalidThemes.CatCount);
         Assert.Equal("golden", invalidThemes.LightingMode);
         Assert.Equal("study", invalidThemes.SceneTheme);
         Assert.Equal("mix", invalidThemes.BreedMode);
+        Assert.Null(invalidThemes.CollarColor);
+        Assert.Equal(0.0, invalidThemes.SoundVolume);
 
         store.Save(new NekoSettings { LaunchAtStartup = false });
         Assert.False(_fakeRegistry.Enabled);
+    }
+
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(0, 1)]
+    [InlineData(-4, 1)]
+    [InlineData(25, 25)]
+    [InlineData(100, 100)]
+    [InlineData(250, 250)]
+    public void Normalized_CatCount_HasNoUpperCap(int input, int expected)
+    {
+        var settings = new NekoSettings { CatCount = input }.Normalized();
+        Assert.Equal(expected, settings.CatCount);
+    }
+
+    [Fact]
+    public void Load_AllowsExplicitNullCollarColorOverride()
+    {
+        File.WriteAllText(Path.Combine(_configDir, "default-settings.json"), """
+            {
+              "catCount": 6,
+              "collarColor": "#d94f5c"
+            }
+            """);
+        File.WriteAllText(Path.Combine(_configDir, "user-settings.json"), """
+            {
+              "collarColor": null
+            }
+            """);
+
+        var store = new AppSettingsStore(_configDir, _fakeRegistry, @"C:\Apps\NekoScape.exe", _fallbackDir);
+        Assert.Null(store.Current.CollarColor);
     }
 
     [Theory]
@@ -182,6 +245,20 @@ public sealed class SettingsTests : IDisposable
     [InlineData("munchkin", "munchkin")]
     [InlineData("sphynx", "sphynx")]
     [InlineData("domestic-shorthair", "domestic_shorthair")]
+    [InlineData("maine_coon", "maine_coon")]
+    [InlineData("Maine Coon", "maine_coon")]
+    [InlineData("scottish_fold", "scottish_fold")]
+    [InlineData("fold", "scottish_fold")]
+    [InlineData("bengal", "bengal")]
+    [InlineData("ragdoll", "ragdoll")]
+    [InlineData("russian_blue", "russian_blue")]
+    [InlineData("Russian Blue", "russian_blue")]
+    [InlineData("abyssinian", "abyssinian")]
+    [InlineData("aby", "abyssinian")]
+    [InlineData("american_curl", "american_curl")]
+    [InlineData("curl", "american_curl")]
+    [InlineData("japanese_bobtail", "japanese_bobtail")]
+    [InlineData("mike", "japanese_bobtail")]
     [InlineData("blue-grey", "british_shorthair")]
     [InlineData("calico", "persian")]
     [InlineData("tuxedo", "munchkin")]
@@ -190,7 +267,7 @@ public sealed class SettingsTests : IDisposable
     [InlineData(null, "mix")]
     [InlineData("", "mix")]
     [InlineData("unknown_breed", "mix")]
-    public void NormalizeBreedMode_HandlesRealBreedsLegacyAliasesAndInvalidValues(string? input, string expected)
+    public void NormalizeBreedMode_HandlesAll14RealBreedsLegacyAliasesAndInvalidValues(string? input, string expected)
     {
         Assert.Equal(expected, NekoSettings.NormalizeBreedMode(input));
     }
@@ -205,23 +282,36 @@ public sealed class SettingsTests : IDisposable
             LightingMode = "golden",
             BreedMode = "mix",
             ShowSceneProps = true,
-            ShowToyDock = true
+            ShowToyDock = true,
+            CollarColor = "#2fa69a",
+            CollarBell = true,
+            SoundEnabled = false,
+            SoundVolume = 0.45
         };
 
         var patch = new NekoSettingsPatch
         {
             CatCount = 99,
             BreedMode = "calico",
-            ShowSceneProps = false
+            ShowSceneProps = false,
+            KittenMode = true,
+            ClearCollarColor = true,
+            SoundEnabled = true,
+            SoundVolume = 0.8
         };
 
         NekoSettings merged = patch.ApplyTo(baseline);
-        Assert.Equal(12, merged.CatCount);
+        Assert.Equal(99, merged.CatCount);
         Assert.Equal("study", merged.SceneTheme);
         Assert.Equal("golden", merged.LightingMode);
         Assert.Equal("persian", merged.BreedMode);
         Assert.False(merged.ShowSceneProps);
         Assert.True(merged.ShowToyDock);
+        Assert.True(merged.KittenMode);
+        Assert.Null(merged.CollarColor);
+        Assert.True(merged.CollarBell);
+        Assert.True(merged.SoundEnabled);
+        Assert.Equal(0.8, merged.SoundVolume);
     }
 
     [Theory]
@@ -229,13 +319,25 @@ public sealed class SettingsTests : IDisposable
     [InlineData("  TATAMI ", "tatami")]
     [InlineData("Garden", "garden")]
     [InlineData("cafe", "cafe")]
+    [InlineData("living_room", "living_room")]
+    [InlineData("Living Room", "living_room")]
+    [InlineData("rainy-window", "rainy_window")]
+    [InlineData("night_balcony", "night_balcony")]
+    [InlineData("kitchen", "kitchen")]
+    [InlineData("bedroom", "bedroom")]
+    [InlineData("snowy_window", "snowy_window")]
+    [InlineData("sunbeam", "sunbeam")]
+    [InlineData("aquarium", "aquarium")]
+    [InlineData("rooftop", "rooftop")]
     [InlineData(null, "study")]
     [InlineData("", "study")]
     [InlineData("forest", "study")]
-    public void NormalizeSceneTheme_HandlesValidAndInvalidValues(string? input, string expected)
+    public void NormalizeSceneTheme_HandlesAll13ThemesAndInvalidValues(string? input, string expected)
     {
         Assert.Equal(expected, NekoSettings.NormalizeSceneTheme(input));
         Assert.Equal("study", new NekoSettings().SceneTheme);
+        Assert.Equal(13, NekoSettings.SceneThemeOptions.Count);
+        Assert.Equal(15, NekoSettings.BreedModeOptions.Count);
     }
 
     [Fact]
@@ -332,11 +434,11 @@ public sealed class SettingsTests : IDisposable
     }
 
     [Fact]
-    public void SettingsDialog_And_TrayFlyoutForm_RoundTripAll13SettingsCleanly()
+    public void SettingsDialog_And_TrayFlyoutForm_RoundTripAll18SettingsAndUncappedCats()
     {
         var initial = new NekoSettings
         {
-            CatCount = 8,
+            CatCount = 35,
             FpsCap = 30,
             ShowHud = false,
             ShowToyDock = false,
@@ -346,14 +448,19 @@ public sealed class SettingsTests : IDisposable
             LaunchAtStartup = true,
             IdleNapMinutes = 15,
             LightingMode = "night",
-            SceneTheme = "cafe",
-            BreedMode = "persian",
-            ShowSceneProps = false
+            SceneTheme = "aquarium",
+            BreedMode = "japanese_bobtail",
+            ShowSceneProps = false,
+            KittenMode = true,
+            CollarColor = "#2fa69a",
+            CollarBell = false,
+            SoundEnabled = true,
+            SoundVolume = 0.72
         };
 
         using var dialog = new SettingsDialog(initial);
         NekoSettings readBack = dialog.ReadFormSettings();
-        Assert.Equal(8, readBack.CatCount);
+        Assert.Equal(35, readBack.CatCount);
         Assert.Equal(30, readBack.FpsCap);
         Assert.False(readBack.ShowHud);
         Assert.False(readBack.ShowToyDock);
@@ -363,33 +470,48 @@ public sealed class SettingsTests : IDisposable
         Assert.True(readBack.LaunchAtStartup);
         Assert.Equal(15, readBack.IdleNapMinutes);
         Assert.Equal("night", readBack.LightingMode);
-        Assert.Equal("cafe", readBack.SceneTheme);
-        Assert.Equal("persian", readBack.BreedMode);
+        Assert.Equal("aquarium", readBack.SceneTheme);
+        Assert.Equal("japanese_bobtail", readBack.BreedMode);
         Assert.False(readBack.ShowSceneProps);
+        Assert.True(readBack.KittenMode);
+        Assert.Equal("#2fa69a", readBack.CollarColor);
+        Assert.False(readBack.CollarBell);
+        Assert.True(readBack.SoundEnabled);
+        Assert.Equal(0.72, readBack.SoundVolume, precision: 2);
 
         var updated = new NekoSettings
         {
-            CatCount = 4,
+            CatCount = 100,
             FpsCap = 0,
             ShowToyDock = true,
-            SceneTheme = "garden",
+            SceneTheme = "rooftop",
             LightingMode = "day",
-            BreedMode = "sphynx",
-            ShowSceneProps = true
+            BreedMode = "maine_coon",
+            ShowSceneProps = true,
+            KittenMode = false,
+            CollarColor = null,
+            CollarBell = true,
+            SoundEnabled = false,
+            SoundVolume = 0.35
         };
         dialog.SyncFromSettings(updated);
         NekoSettings synced = dialog.ReadFormSettings();
-        Assert.Equal(4, synced.CatCount);
+        Assert.Equal(100, synced.CatCount);
         Assert.Equal(0, synced.FpsCap);
         Assert.True(synced.ShowToyDock);
-        Assert.Equal("garden", synced.SceneTheme);
+        Assert.Equal("rooftop", synced.SceneTheme);
         Assert.Equal("day", synced.LightingMode);
-        Assert.Equal("sphynx", synced.BreedMode);
+        Assert.Equal("maine_coon", synced.BreedMode);
         Assert.True(synced.ShowSceneProps);
+        Assert.False(synced.KittenMode);
+        Assert.Null(synced.CollarColor);
+        Assert.True(synced.CollarBell);
+        Assert.False(synced.SoundEnabled);
+        Assert.Equal(0.35, synced.SoundVolume, precision: 2);
 
-        using var flyout = new TrayFlyoutForm(new TrayFlyoutState(updated, LaserActive: true, Paused: false, ActiveCats: 4, Pounces: 7, IsWindowedMode: true));
-        flyout.UpdateState(new TrayFlyoutState(initial, LaserActive: false, Paused: true, ActiveCats: 8, Pounces: 12, IsWindowedMode: false));
-        Assert.Equal(new Size(364, 498), flyout.ClientSize);
+        using var flyout = new TrayFlyoutForm(new TrayFlyoutState(updated, LaserActive: true, Paused: false, ActiveCats: 100, Pounces: 7, IsWindowedMode: true));
+        flyout.UpdateState(new TrayFlyoutState(initial, LaserActive: false, Paused: true, ActiveCats: 35, Pounces: 12, IsWindowedMode: false));
+        Assert.Equal(new Size(372, 542), flyout.ClientSize);
     }
 
     public void Dispose()

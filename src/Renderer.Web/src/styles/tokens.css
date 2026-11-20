@@ -48,11 +48,26 @@
   --accent-treat: oklch(0.7680 0.1280 56.00);
   --accent-treat-soft: oklch(0.7680 0.1280 56.00 / 0.18);
 
-  /* Scene Accent Dots */
+  --accent-teal: oklch(0.7050 0.0980 175.00);
+  --accent-teal-soft: oklch(0.7050 0.0980 175.00 / 0.18);
+  --accent-teal-border: oklch(0.7050 0.0980 175.00 / 0.50);
+
+  --accent-heart: oklch(0.6850 0.1580 18.00);
+
+  /* Scene Accent Dots (13 Scenes) */
   --scene-study: oklch(0.7780 0.1180 67.20);
   --scene-tatami: oklch(0.7300 0.0950 116.00);
   --scene-garden: oklch(0.6950 0.1050 148.00);
   --scene-cafe: oklch(0.6900 0.1150 38.00);
+  --scene-living_room: oklch(0.7350 0.1050 52.00);
+  --scene-rainy_window: oklch(0.6650 0.0880 235.00);
+  --scene-night_balcony: oklch(0.6400 0.1120 278.00);
+  --scene-kitchen: oklch(0.7850 0.1120 82.00);
+  --scene-bedroom: oklch(0.6980 0.0960 315.00);
+  --scene-snowy_window: oklch(0.8400 0.0550 225.00);
+  --scene-sunbeam: oklch(0.8150 0.1320 88.00);
+  --scene-aquarium: oklch(0.7050 0.1120 198.00);
+  --scene-rooftop: oklch(0.7150 0.1420 34.00);
 
   /* Motion & Easing (Emil Kowalski curves) */
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
@@ -79,6 +94,7 @@
   --z-hud: 20;
   --z-toast: 25;
   --z-dock: 30;
+  --z-flash: 45;
 }
 
 *,

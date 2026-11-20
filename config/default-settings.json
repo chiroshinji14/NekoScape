@@ -11,5 +11,10 @@
   "lightingMode": "golden",
   "sceneTheme": "study",
   "breedMode": "mix",
-  "showSceneProps": true
+  "showSceneProps": true,
+  "kittenMode": false,
+  "collarColor": null,
+  "collarBell": true,
+  "soundEnabled": false,
+  "soundVolume": 0.45
 }

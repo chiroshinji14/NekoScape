@@ -4,14 +4,19 @@ import {
   BONK_VELOCITY_THRESHOLD,
   CAT_BREED_LABELS,
   type AabbRect,
+  type CatArchetype,
   type CatBreed,
   type CatMood,
+  type CatNeeds,
   type CatPersonality,
   type CatStateName,
+  type CircadianPhase,
   type DroppedTreat,
   type InteractivePropState,
   type RugBounds,
+  type ToyEntityState,
   type WarmZone,
+  type WindowLedgesState,
 } from '../types/simulation';
 
 export interface DebugCatInfo {
@@ -26,6 +31,11 @@ export interface DebugCatInfo {
   breed: CatBreed;
   mood?: CatMood;
   personality?: CatPersonality;
+  archetype?: CatArchetype;
+  needs?: CatNeeds;
+  isKitten?: boolean;
+  friendshipLevel?: number;
+  sleepIndicator?: string;
   activePropId?: string | null;
   zHeight?: number;
   perchedIconId?: number | null;
@@ -66,7 +76,10 @@ export interface DebugRenderSnapshot {
   box?: DebugBoxInfo;
   props?: readonly InteractivePropState[];
   treats?: readonly DroppedTreat[];
+  toys?: readonly ToyEntityState[];
   warmZones?: readonly WarmZone[];
+  windowLedges?: WindowLedgesState | null;
+  circadianPhase?: CircadianPhase;
 }
 
 const DEBUG_TEXT_STYLE = new TextStyle({
@@ -93,6 +106,11 @@ const COLOR_PROP_ACTIVE = 0xffcf70;
 const COLOR_PROP_ANCHOR = 0x67e8c3;
 const COLOR_WARM_ZONE = 0xffae52;
 const COLOR_TREAT = 0xf49d6e;
+const COLOR_TOY = 0xff9f68;
+const COLOR_TOY_SCARY = 0x62d96b;
+const COLOR_TOY_CARRIED = 0xff7eb6;
+const COLOR_TASKBAR_LEDGE = 0x5ca8ff;
+const COLOR_WINDOW_LEDGE = 0x5ee0d4;
 const COLOR_JUMP_ARC = 0x62e3ff;
 
 const STATE_COLOR_MAP: Record<CatStateName, number> = {
@@ -103,6 +121,8 @@ const STATE_COLOR_MAP: Record<CatStateName, number> = {
   POUNCE: COLOR_CAT_FAST,
   BONK: COLOR_CAT_FAST,
   NAP: 0x99b898,
+  DEEP_SLEEP: 0x7e9eb8,
+  DREAMING: 0x9fa8ea,
   PETTED: 0xf6b8b8,
   STARTLED: COLOR_CAT_FAST,
   IN_BOX: COLOR_BOX,
@@ -113,6 +133,8 @@ const STATE_COLOR_MAP: Record<CatStateName, number> = {
   SCRATCH_ICON: 0xf28b50,
   GROOMING: 0xd9a9f5,
   LOAFING: 0xa7d489,
+  KNEADING: 0xf7b2d9,
+  SLOW_BLINK: 0xffd2a6,
   STRETCHING: 0xf7c97e,
   ZOOMIES: 0xff6b57,
   ROLL_BELLY: 0xf79bb6,
@@ -124,6 +146,24 @@ const STATE_COLOR_MAP: Record<CatStateName, number> = {
   CHASE_LASER: 0xff5e57,
   BAT_YARN: 0xe07a5f,
   SNIFF_FILE: 0x9cd6c8,
+  POUNCE_WIGGLE: 0xf4b942,
+  CHATTER: 0xffc470,
+  STARE_VOID: 0xb7a6e8,
+  HEAD_BUNT: 0xf9b7c4,
+  FLEHMEN: 0xd9e077,
+  SNEEZE_HICCUP: 0x9be7ff,
+  TRIP_RECOVER: 0xf4a261,
+  DRINKING: 0x62c8f5,
+  LITTER_USE: 0xd6b88d,
+  CUCUMBER_SCARE: 0xff4d6d,
+  CARRY_GIFT: 0xff85a1,
+  HAIRBALL: 0xc2b280,
+  IGNORE_USER: 0xa8b0c0,
+  TASKBAR_WALK: COLOR_TASKBAR_LEDGE,
+  PAW_TEST: 0x88e0d0,
+  OVERSTIMULATED: 0xe76f51,
+  PAPER_BAG_AMBUSH: 0xd49b6a,
+  PLAY_TOY: COLOR_TOY,
 };
 
 function setLabelText(label: Text, nextText: string, x: number, y: number): void {
@@ -148,6 +188,8 @@ export class DebugVisualizer {
 
   private readonly iconLabels: Text[] = [];
   private readonly propLabels: Text[] = [];
+  private readonly toyLabels: Text[] = [];
+  private readonly ledgeLabels: Text[] = [];
   private readonly catLabels: Text[] = [];
   private readonly rugLabel: Text;
   private readonly prismLabel: Text;
@@ -186,15 +228,11 @@ export class DebugVisualizer {
     this.rugLabel.visible = false;
     this.prismLabel.visible = false;
     this.boxLabel.visible = false;
-    for (const label of this.iconLabels) {
-      label.visible = false;
-    }
-    for (const label of this.propLabels) {
-      label.visible = false;
-    }
-    for (const label of this.catLabels) {
-      label.visible = false;
-    }
+    for (const label of this.iconLabels) label.visible = false;
+    for (const label of this.propLabels) label.visible = false;
+    for (const label of this.toyLabels) label.visible = false;
+    for (const label of this.ledgeLabels) label.visible = false;
+    for (const label of this.catLabels) label.visible = false;
   }
 
   private acquirePooledLabel(pool: Text[], index: number): Text {
@@ -246,13 +284,11 @@ export class DebugVisualizer {
     const steps = 16;
     const peakLift = arc.peakZ * 0.68;
 
-    // Ground chord connecting takeoff and landing target
     this.graphics
       .moveTo(arc.start.x, arc.start.y)
       .lineTo(arc.end.x, arc.end.y)
       .stroke({ width: 1, color: COLOR_JUMP_ARC, alpha: 0.35 });
 
-    // Parabolic trajectory curve above box walls
     for (let i = 0; i <= steps; i++) {
       const u = i / steps;
       const px = arc.start.x + (arc.end.x - arc.start.x) * u;
@@ -265,7 +301,6 @@ export class DebugVisualizer {
     }
     this.graphics.stroke({ width: 2, color: COLOR_JUMP_ARC, alpha: 0.9, cap: 'round' });
 
-    // Landing target bullseye outside box
     this.graphics
       .circle(arc.end.x, arc.end.y, 7)
       .stroke({ width: 1.5, color: COLOR_JUMP_ARC, alpha: 0.88 })
@@ -287,38 +322,84 @@ export class DebugVisualizer {
       }
     }
 
-    // 1. Center Rug friction zone outline
+    // 1. Center Rug friction zone outline + Circadian phase badge
     const { rug } = snapshot;
     this.graphics
       .roundRect(rug.x, rug.y, rug.width, rug.height, rug.cornerRadius)
       .stroke({ width: 1.5, color: COLOR_RUG, alpha: 0.72 });
+    const phaseTag = snapshot.circadianPhase
+      ? ` | CIRCADIAN: ${snapshot.circadianPhase.toUpperCase()}`
+      : '';
     setLabelText(
       this.rugLabel,
-      `RUG ZONE (${Math.round(rug.width)}x${Math.round(rug.height)}, mu=0.96)`,
+      `RUG ZONE (${Math.round(rug.width)}x${Math.round(rug.height)}, mu=0.96) | CATS: ${snapshot.cats.length}${phaseTag}`,
       rug.x + 10,
       rug.y + 8,
     );
 
-    // 2. Warm light pools
+    // 2. Warm light pools & drifting sunbeams
     if (snapshot.warmZones) {
       for (const wz of snapshot.warmZones) {
         this.graphics
           .circle(wz.x, wz.y, wz.radius)
-          .fill({ color: COLOR_WARM_ZONE, alpha: 0.04 * wz.intensity })
-          .stroke({ width: 1, color: COLOR_WARM_ZONE, alpha: 0.45 });
+          .fill({ color: COLOR_WARM_ZONE, alpha: 0.05 * wz.intensity })
+          .stroke({ width: 1.25, color: COLOR_WARM_ZONE, alpha: 0.55 });
       }
     }
 
-    // 3. Interactive Scene Props hitboxes, interaction anchors & labels
+    // 3. Taskbar & Open Window Ledges (Win32 Wallpaper Mode)
+    let ledgeLabelIdx = 0;
+    const ledges = snapshot.windowLedges;
+    if (ledges) {
+      if (ledges.taskbarRect) {
+        const tb = ledges.taskbarRect;
+        this.graphics
+          .rect(tb.x, tb.y, tb.width, tb.height)
+          .fill({ color: COLOR_TASKBAR_LEDGE, alpha: 0.14 })
+          .stroke({ width: 1.75, color: COLOR_TASKBAR_LEDGE, alpha: 0.9 });
+        const label = this.acquirePooledLabel(this.ledgeLabels, ledgeLabelIdx++);
+        setLabelText(
+          label,
+          `TASKBAR LEDGE (${Math.round(tb.x)},${Math.round(tb.y)} ${Math.round(tb.width)}x${Math.round(tb.height)})`,
+          tb.x + 6,
+          Math.max(4, tb.y - 16),
+        );
+      }
+      for (const ledge of ledges.windowTopLedges) {
+        this.graphics
+          .rect(ledge.x, ledge.y, ledge.width, ledge.height)
+          .fill({ color: COLOR_WINDOW_LEDGE, alpha: 0.16 })
+          .stroke({ width: 1.5, color: COLOR_WINDOW_LEDGE, alpha: 0.88 });
+        const label = this.acquirePooledLabel(this.ledgeLabels, ledgeLabelIdx++);
+        setLabelText(
+          label,
+          `LEDGE: ${ledge.label}`,
+          ledge.x + 4,
+          Math.max(4, ledge.y - 15),
+        );
+      }
+    }
+    for (let i = ledgeLabelIdx; i < this.ledgeLabels.length; i++) {
+      this.ledgeLabels[i].visible = false;
+    }
+
+    // 4. Interactive Scene Props hitboxes (circular or elliptical), anchors & drink spots
     const props = snapshot.props ?? [];
     for (let i = 0; i < props.length; i++) {
       const prop = props[i];
       const propColor = prop.isActive || prop.hovered ? COLOR_PROP_ACTIVE : COLOR_PROP_IDLE;
 
-      this.graphics
-        .circle(prop.x, prop.y, prop.radius)
-        .fill({ color: propColor, alpha: prop.isActive ? 0.12 : 0.05 })
-        .stroke({ width: prop.isActive || prop.hovered ? 1.8 : 1.25, color: propColor, alpha: 0.85 });
+      if (prop.radiusX && prop.radiusY) {
+        this.graphics
+          .ellipse(prop.x, prop.y, prop.radiusX, prop.radiusY)
+          .fill({ color: propColor, alpha: prop.isActive ? 0.12 : 0.05 })
+          .stroke({ width: prop.isActive || prop.hovered ? 1.8 : 1.25, color: propColor, alpha: 0.85 });
+      } else {
+        this.graphics
+          .circle(prop.x, prop.y, prop.radius)
+          .fill({ color: propColor, alpha: prop.isActive ? 0.12 : 0.05 })
+          .stroke({ width: prop.isActive || prop.hovered ? 1.8 : 1.25, color: propColor, alpha: 0.85 });
+      }
 
       if (prop.isActive) {
         this.graphics
@@ -337,20 +418,30 @@ export class DebugVisualizer {
           .fill({ color: COLOR_PROP_ANCHOR, alpha: 0.9 });
       }
 
+      if (prop.drinkPoints) {
+        for (const dp of prop.drinkPoints) {
+          this.graphics
+            .circle(dp.x, dp.y, 3)
+            .fill({ color: 0x62c8f5, alpha: 0.9 });
+        }
+      }
+
       const label = this.acquirePooledLabel(this.propLabels, i);
       const stateTag = prop.isActive ? ' [ACTIVE]' : '';
+      const tipTag = prop.isTipped ? ' [TIPPED]' : '';
+      const topOffset = prop.radiusY ?? prop.radius;
       setLabelText(
         label,
-        `${prop.label} (${prop.interactionType})${stateTag}`,
-        prop.x - prop.radius,
-        Math.max(4, prop.y - prop.radius - 15),
+        `${prop.label} (${prop.interactionType})${stateTag}${tipTag}`,
+        prop.x - (prop.radiusX ?? prop.radius),
+        Math.max(4, prop.y - topOffset - 15),
       );
     }
     for (let i = props.length; i < this.propLabels.length; i++) {
       this.propLabels[i].visible = false;
     }
 
-    // 4. Dropped treats
+    // 5. Dropped treats
     if (snapshot.treats) {
       for (const treat of snapshot.treats) {
         this.graphics
@@ -360,7 +451,39 @@ export class DebugVisualizer {
       }
     }
 
-    // 5. Icon AABB wireframes + perched highlights + indices/labels
+    // 6. Deployable Toys
+    const toys = snapshot.toys ?? [];
+    for (let i = 0; i < toys.length; i++) {
+      const toy = toys[i];
+      const toyColor =
+        toy.isCarriedByCatId !== null
+          ? COLOR_TOY_CARRIED
+          : toy.isScary
+            ? COLOR_TOY_SCARY
+            : COLOR_TOY;
+
+      this.graphics
+        .circle(toy.x, toy.y, toy.radius)
+        .fill({ color: toyColor, alpha: 0.14 })
+        .stroke({ width: 1.5, color: toyColor, alpha: 0.9 });
+
+      this.drawVelocityVector(toy.x, toy.y, toy.vx, toy.vy, toyColor);
+
+      const label = this.acquirePooledLabel(this.toyLabels, i);
+      const carryTag = toy.isCarriedByCatId !== null ? ` [CARRY #${toy.isCarriedByCatId}]` : '';
+      const scaryTag = toy.isScary ? ' [SCARY]' : '';
+      setLabelText(
+        label,
+        `TOY:${toy.kind}${carryTag}${scaryTag}`,
+        toy.x + toy.radius + 4,
+        toy.y - 7,
+      );
+    }
+    for (let i = toys.length; i < this.toyLabels.length; i++) {
+      this.toyLabels[i].visible = false;
+    }
+
+    // 7. Icon AABB wireframes + perched highlights + indices/labels
     for (let i = 0; i < snapshot.icons.length; i++) {
       const icon = snapshot.icons[i];
       const occupantCatId = perchedByIcon.get(icon.id);
@@ -389,7 +512,7 @@ export class DebugVisualizer {
       this.iconLabels[i].visible = false;
     }
 
-    // 6. Prism trigger radius
+    // 8. Prism trigger radius
     const { prism } = snapshot;
     const prismColor = prism.splitActive ? COLOR_PRISM_SPLIT : COLOR_PRISM_IDLE;
     this.graphics
@@ -409,7 +532,7 @@ export class DebugVisualizer {
       prism.y + prism.radius + 6,
     );
 
-    // 7. Cardboard Box exterior bounds & Yarn diagnostics
+    // 9. Cardboard Box exterior bounds & Yarn diagnostics
     if (snapshot.box && snapshot.box.visible) {
       const { box } = snapshot;
       const ext = box.exterior ?? {
@@ -466,24 +589,26 @@ export class DebugVisualizer {
       this.drawVelocityVector(yarn.x, yarn.y, yarn.vx, yarn.vy, COLOR_YARN);
     }
 
-    // 8. Cat bodies, elevation arcs, box jump trajectory curves, velocity vectors & breed/personality/state tags
+    // 10. Cat bodies, elevation arcs, jump trajectories, velocity vectors & brain/needs tags
+    const compactLabels = snapshot.cats.length > 24;
     for (let i = 0; i < snapshot.cats.length; i++) {
       const cat = snapshot.cats[i];
       const speed = Math.hypot(cat.vx, cat.vy);
       const z = cat.zHeight ?? 0;
       const liftPx = computeVisualLiftPx(z);
-      const color = speed > BONK_VELOCITY_THRESHOLD ? COLOR_CAT_FAST : (STATE_COLOR_MAP[cat.state] ?? COLOR_CAT_CALM);
+      const color =
+        speed > BONK_VELOCITY_THRESHOLD
+          ? COLOR_CAT_FAST
+          : (STATE_COLOR_MAP[cat.state] ?? COLOR_CAT_CALM);
 
       if (cat.jumpArc && cat.jumpArc.active) {
         this.drawJumpArc(cat.jumpArc);
       }
 
-      // Ground footprint ring
       this.graphics
         .circle(cat.x, cat.y, cat.radius)
         .stroke({ width: liftPx > 1 ? 1 : 1.5, color, alpha: liftPx > 1 ? 0.45 : 0.88 });
 
-      // Elevated arc ring when jumping or perched
       if (liftPx > 1) {
         const liftY = cat.y - liftPx;
         this.graphics
@@ -503,38 +628,53 @@ export class DebugVisualizer {
 
       this.drawVelocityVector(cat.x, cat.y, cat.vx, cat.vy, color);
 
-      const breedLabel = CAT_BREED_LABELS[cat.breed] ?? cat.breed;
-      const namePrefix = cat.name ? `${cat.name} (${breedLabel})` : breedLabel;
-      const extras: string[] = [];
-      if (cat.mood) {
-        extras.push(cat.mood);
-      }
-      if (cat.personality) {
-        const p = cat.personality;
-        extras.push(
-          `P:${Math.round(p.curiosity * 9)}${Math.round(p.playfulness * 9)}${Math.round(p.warmthAffinity * 9)}`,
+      const label = this.acquirePooledLabel(this.catLabels, i);
+      if (compactLabels) {
+        const sleepTag = cat.sleepIndicator ? ` ${cat.sleepIndicator}` : '';
+        setLabelText(
+          label,
+          `#${cat.id} ${cat.state}${sleepTag}`,
+          cat.x + cat.radius + 4,
+          cat.y - 7 - liftPx,
+        );
+      } else {
+        const breedLabel = CAT_BREED_LABELS[cat.breed] ?? cat.breed;
+        const namePrefix = cat.name ? `${cat.name} (${breedLabel})` : breedLabel;
+        const extras: string[] = [];
+        if (cat.isKitten) extras.push('K');
+        if (cat.archetype) extras.push(cat.archetype);
+        if (cat.mood) extras.push(cat.mood);
+        if (cat.needs) {
+          extras.push(
+            `E${Math.round(cat.needs.energy)}/H${Math.round(cat.needs.hunger)}/B${Math.round(cat.needs.boredom)}`,
+          );
+        }
+        if (cat.friendshipLevel !== undefined) {
+          extras.push(`Lv${cat.friendshipLevel}`);
+        }
+        if (cat.sleepIndicator) {
+          extras.push(cat.sleepIndicator);
+        }
+        if (z > 0.5) {
+          extras.push(`z=${Math.round(z)}px`);
+        } else if (z > 0.04) {
+          extras.push(`z=${z.toFixed(2)}`);
+        }
+        if (cat.activePropId) {
+          extras.push(`prop:${cat.activePropId}`);
+        }
+        if (cat.perchedIconId !== null && cat.perchedIconId !== undefined) {
+          extras.push(`icon#${cat.perchedIconId}`);
+        }
+        const suffix = extras.length > 0 ? ` [${extras.join(' ')}]` : '';
+
+        setLabelText(
+          label,
+          `#${cat.id} ${namePrefix} · ${cat.state} ${Math.round(speed)}px/s${suffix}`,
+          cat.x + cat.radius + 6,
+          cat.y - 8 - liftPx,
         );
       }
-      if (z > 0.5) {
-        extras.push(`z=${Math.round(z)}px`);
-      } else if (z > 0.04) {
-        extras.push(`z=${z.toFixed(2)}`);
-      }
-      if (cat.activePropId) {
-        extras.push(`prop:${cat.activePropId}`);
-      }
-      if (cat.perchedIconId !== null && cat.perchedIconId !== undefined) {
-        extras.push(`icon#${cat.perchedIconId}`);
-      }
-      const suffix = extras.length > 0 ? ` [${extras.join(' ')}]` : '';
-
-      const label = this.acquirePooledLabel(this.catLabels, i);
-      setLabelText(
-        label,
-        `#${cat.id} ${namePrefix} · ${cat.state} ${Math.round(speed)}px/s${suffix}`,
-        cat.x + cat.radius + 6,
-        cat.y - 8 - liftPx,
-      );
     }
     for (let i = snapshot.cats.length; i < this.catLabels.length; i++) {
       this.catLabels[i].visible = false;
@@ -546,15 +686,11 @@ export class DebugVisualizer {
     this.rugLabel.destroy();
     this.prismLabel.destroy();
     this.boxLabel.destroy();
-    for (const label of this.iconLabels) {
-      label.destroy();
-    }
-    for (const label of this.propLabels) {
-      label.destroy();
-    }
-    for (const label of this.catLabels) {
-      label.destroy();
-    }
+    for (const label of this.iconLabels) label.destroy();
+    for (const label of this.propLabels) label.destroy();
+    for (const label of this.toyLabels) label.destroy();
+    for (const label of this.ledgeLabels) label.destroy();
+    for (const label of this.catLabels) label.destroy();
     this.container.destroy({ children: true });
   }
 }

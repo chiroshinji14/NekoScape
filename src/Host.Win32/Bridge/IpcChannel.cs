@@ -71,6 +71,15 @@ public sealed record PowerStateMessage(
 public sealed record SpawnActionMessage(
     string Action) : HostToRendererMessage("SPAWN_ACTION");
 
+public sealed record WindowLedgesMessage(
+    DesktopIconRect? TaskbarRect,
+    IReadOnlyList<DesktopIconRect> WindowTopLedges) : HostToRendererMessage("WINDOW_LEDGES_UPDATE");
+
+public sealed record AudioActivityMessage(
+    double Level,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? SourceX = null)
+    : HostToRendererMessage("AUDIO_ACTIVITY");
+
 public abstract record RendererToHostMessage([property: JsonPropertyOrder(-1)] string Type);
 
 public sealed record ReadyMessage(
@@ -109,6 +118,19 @@ public static class SpawnActions
     public const string ToggleBox = "toggleBox";
     public const string DropTreat = "dropTreat";
     public const string ToggleProps = "toggleProps";
+    public const string DropMouse = "dropMouse";
+    public const string DropFish = "dropFish";
+    public const string DropFeather = "dropFeather";
+    public const string DropCrinkle = "dropCrinkle";
+    public const string DropSpring = "dropSpring";
+    public const string DropPingPong = "dropPingPong";
+    public const string DropHairTie = "dropHairTie";
+    public const string DropBubbles = "dropBubbles";
+    public const string DropCucumber = "dropCucumber";
+    public const string TogglePaperBag = "togglePaperBag";
+    public const string ToggleTapedSquare = "toggleTapedSquare";
+    public const string ClearToys = "clearToys";
+    public const string PhotoSnapshot = "photoSnapshot";
 }
 
 public sealed class IpcChannel
@@ -216,6 +238,8 @@ public sealed class IpcChannel
             "SETTINGS_UPDATE" => doc.RootElement.Deserialize<SettingsUpdateMessage>(JsonOptions),
             "POWER_STATE" => doc.RootElement.Deserialize<PowerStateMessage>(JsonOptions),
             "SPAWN_ACTION" => doc.RootElement.Deserialize<SpawnActionMessage>(JsonOptions),
+            "WINDOW_LEDGES_UPDATE" => doc.RootElement.Deserialize<WindowLedgesMessage>(JsonOptions),
+            "AUDIO_ACTIVITY" => doc.RootElement.Deserialize<AudioActivityMessage>(JsonOptions),
             _ => null
         };
     }
@@ -239,9 +263,23 @@ public sealed class IpcChannel
             "READY" => doc.RootElement.Deserialize<ReadyMessage>(JsonOptions),
             "STATS_UPDATE" => doc.RootElement.Deserialize<StatsUpdateMessage>(JsonOptions),
             "REQUEST_ICON_RESCAN" => doc.RootElement.Deserialize<RequestIconRescanMessage>(JsonOptions),
-            "SETTINGS_CHANGED" => doc.RootElement.Deserialize<SettingsChangedMessage>(JsonOptions),
+            "SETTINGS_CHANGED" => DeserializeSettingsChanged(doc.RootElement),
             _ => null
         };
+    }
+
+    private static SettingsChangedMessage? DeserializeSettingsChanged(JsonElement root)
+    {
+        SettingsChangedMessage? msg = root.Deserialize<SettingsChangedMessage>(JsonOptions);
+        if (msg?.Settings is not null
+            && root.TryGetProperty("settings", out JsonElement settingsElem)
+            && settingsElem.ValueKind == JsonValueKind.Object
+            && settingsElem.TryGetProperty("collarColor", out JsonElement collarElem)
+            && collarElem.ValueKind == JsonValueKind.Null)
+        {
+            msg.Settings.ClearCollarColor = true;
+        }
+        return msg;
     }
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
