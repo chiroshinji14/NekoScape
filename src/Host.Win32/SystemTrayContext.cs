@@ -741,9 +741,31 @@ public sealed class SystemTrayContext : ApplicationContext
             return false;
         }
 
+        Span<bool> matched = a.Count <= 128 ? stackalloc bool[a.Count] : new bool[a.Count];
         for (int i = 0; i < a.Count; i++)
         {
-            if (a[i] != b[i])
+            DesktopIconRect ia = a[i];
+            bool found = false;
+            for (int j = 0; j < b.Count; j++)
+            {
+                if (matched[j])
+                {
+                    continue;
+                }
+
+                DesktopIconRect ib = b[j];
+                if (Math.Abs(ia.X - ib.X) <= 1.5
+                    && Math.Abs(ia.Y - ib.Y) <= 1.5
+                    && Math.Abs(ia.Width - ib.Width) <= 1.5
+                    && Math.Abs(ia.Height - ib.Height) <= 1.5)
+                {
+                    matched[j] = true;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
             {
                 return false;
             }

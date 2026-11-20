@@ -426,27 +426,12 @@ async function bootstrap(): Promise<void> {
 
   syncCatCount(settings.catCount);
 
-  // Coalesced IconMats SDF update: rAF fast pass during drag, crisp pass on settle
-  let pendingMatsIcons: readonly AabbRect[] = [];
-  let iconMatsRafId: number | null = null;
-
+  // Only update & animate icon mats when an icon is dropped/settled (no mat movement during drag)
   function scheduleIconMatsUpdate(rects: readonly AabbRect[], isDragging: boolean): void {
-    pendingMatsIcons = rects;
-    if (!isDragging) {
-      if (iconMatsRafId !== null) {
-        window.cancelAnimationFrame(iconMatsRafId);
-        iconMatsRafId = null;
-      }
-      iconMatsOverlay.setIcons(rects, { fast: false });
+    if (isDragging) {
       return;
     }
-
-    if (iconMatsRafId === null) {
-      iconMatsRafId = window.requestAnimationFrame(() => {
-        iconMatsRafId = null;
-        iconMatsOverlay.setIcons(pendingMatsIcons, { fast: true });
-      });
-    }
+    iconMatsOverlay.setIcons(rects, { fast: false });
   }
 
   function isLaserCurrentlyActive(): boolean {
@@ -1000,37 +985,6 @@ async function bootstrap(): Promise<void> {
     return { x: bin.x + bin.width * 0.5, y: bin.y + bin.height * 0.5 };
   }
 
-  let latestHostIcons: AabbRect[] = [];
-  let nativeIconDrag: {
-    iconId: number;
-    label: string;
-    startX: number;
-    startY: number;
-    grabOffsetX: number;
-    grabOffsetY: number;
-    dragging: boolean;
-  } | null = null;
-  let wasHostLeftDown = false;
-
-  function buildHostIconsWithLiveDrag(dragX: number, dragY: number): AabbRect[] {
-    if (!nativeIconDrag) {
-      return latestHostIcons;
-    }
-    return latestHostIcons.map((icon) => {
-      const matches =
-        (nativeIconDrag!.label.length > 0 && icon.label === nativeIconDrag!.label) ||
-        icon.id === nativeIconDrag!.iconId;
-      if (!matches) {
-        return icon;
-      }
-      return {
-        ...icon,
-        x: clamp(Math.round(dragX - nativeIconDrag!.grabOffsetX), 4, viewWidth - icon.width - 4),
-        y: clamp(Math.round(dragY - nativeIconDrag!.grabOffsetY), 4, viewHeight - icon.height - 4),
-      };
-    });
-  }
-
   function handleHostMessage(msg: HostToRendererMessage): void {
     switch (msg.type) {
       case 'ICON_UPDATE': {
@@ -1039,72 +993,14 @@ async function bootstrap(): Promise<void> {
           mockIcons.hideForNativeMode();
           refreshUiOverlays();
         }
-        latestHostIcons = msg.icons.map((icon) => ({ ...icon }));
-        if (nativeIconDrag && nativeIconDrag.dragging) {
-          const live = buildHostIconsWithLiveDrag(cursorPos.x, cursorPos.y);
-          physics.setObstacles(live);
-          scheduleIconMatsUpdate(live, true);
-        } else {
-          physics.setObstacles(latestHostIcons);
-          scheduleIconMatsUpdate(latestHostIcons, false);
-        }
+        physics.setObstacles(msg.icons);
+        scheduleIconMatsUpdate(msg.icons, false);
         break;
       }
 
       case 'MOUSE_RAW': {
         cursorPos.x = msg.x;
         cursorPos.y = msg.y;
-        const leftDown = msg.buttons?.left === true;
-
-        if (nativeHostConnected && latestHostIcons.length > 0) {
-          if (leftDown && !wasHostLeftDown) {
-            const hit = latestHostIcons.find(
-              (icon) =>
-                msg.x >= icon.x - 6 &&
-                msg.x <= icon.x + icon.width + 6 &&
-                msg.y >= icon.y - 6 &&
-                msg.y <= icon.y + icon.height + 6,
-            );
-            if (hit) {
-              nativeIconDrag = {
-                iconId: hit.id,
-                label: hit.label ?? '',
-                startX: msg.x,
-                startY: msg.y,
-                grabOffsetX: msg.x - hit.x,
-                grabOffsetY: msg.y - hit.y,
-                dragging: false,
-              };
-            } else {
-              nativeIconDrag = null;
-            }
-          } else if (leftDown && nativeIconDrag) {
-            if (
-              !nativeIconDrag.dragging &&
-              Math.hypot(msg.x - nativeIconDrag.startX, msg.y - nativeIconDrag.startY) > 6
-            ) {
-              nativeIconDrag.dragging = true;
-            }
-            if (nativeIconDrag.dragging) {
-              const live = buildHostIconsWithLiveDrag(msg.x, msg.y);
-              physics.setObstacles(live);
-              scheduleIconMatsUpdate(live, true);
-            }
-          } else if (!leftDown && wasHostLeftDown) {
-            if (nativeIconDrag && nativeIconDrag.dragging) {
-              const droppedIcons = buildHostIconsWithLiveDrag(msg.x, msg.y);
-              latestHostIcons = droppedIcons;
-              nativeIconDrag = null;
-              physics.setObstacles(droppedIcons);
-              scheduleIconMatsUpdate(droppedIcons, false);
-              postToHost({ type: 'REQUEST_ICON_RESCAN' });
-            } else {
-              nativeIconDrag = null;
-            }
-          }
-        }
-        wasHostLeftDown = leftDown;
-
         if (hostLaserActive !== msg.laserMode) {
           lastHostLaserSyncMs = performance.now();
         }

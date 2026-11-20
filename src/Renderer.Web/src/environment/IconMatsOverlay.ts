@@ -11,23 +11,22 @@ import {
 const CANVAS_STEP = 2;
 const PATCH_CSS_SIZE = 180;
 const PATCH_CANVAS_SIZE = PATCH_CSS_SIZE / CANVAS_STEP;
+const POSITION_MATCH_TOLERANCE_PX = 3.5;
 
 /**
  * Iconscape-inspired coalesced organic floor mats underneath desktop icons.
  *
- * Performance & Animation Architecture:
- * - Stationary icons remain on `currentSprite` at 100% steady opacity and NEVER
- *   blink, refresh, or fade when another icon is dragged or dropped.
- * - While an icon is actively dragged (`fast: true`), the background Web Worker
- *   renders the remaining stationary icons once onto `currentSprite`, while the
- *   single dragged icon's mat (`dragMatSprite`) translates purely on the GPU at 60+ FPS.
- * - The moment the dragged icon is dropped (`fast: false`), ONLY that dropped icon's
- *   mat (`dropBloomSprite`) fades in (`alpha: 0 -> 1`, `scale: 0.76 -> 1.0`) over 360ms
- *   at the dropped spot, and then seamlessly hands off to the Worker's merged SDF buffer.
+ * Behavior & Performance:
+ * - No dynamic mat movement while dragging an icon (zero drag-time CPU/GPU overhead).
+ * - When a dragged icon is dropped, geometric position set-difference matching
+ *   (`findNewlyPlacedIcons`) identifies ONLY the newly dropped icon coordinate(s)
+ *   regardless of Windows Explorer `SysListView32` index reordering.
+ * - Stationary icons remain at 100% steady opacity on `currentSprite` and never
+ *   refresh or blink; ONLY the dropped icon's mat (`dropBloomSprite`) fades & blooms
+ *   in (`alpha: 0 -> 1`, `scale: 0.8 -> 1.0`) over 360ms at the dropped position.
  */
 export class IconMatsOverlay extends Container {
   private readonly currentSprite: Sprite;
-  private readonly dragMatSprite: Sprite;
   private readonly dropBloomSprite: Sprite;
 
   private currentTexture: Texture | null = null;
@@ -62,9 +61,6 @@ export class IconMatsOverlay extends Container {
 
   private icons: AabbRect[] = [];
   private settledIcons: AabbRect[] = [];
-  private activeDraggedKey: string | null = null;
-  private wasDragging = false;
-  private lastDraggedCenter: { x: number; y: number; width: number; height: number } | null = null;
 
   // Per-icon GPU drop fade-in progress (1 = idle, 0..1 = single dropped icon fading in)
   private dropBloomProgress = 1;
@@ -88,11 +84,7 @@ export class IconMatsOverlay extends Container {
     this.dropBloomSprite.anchor.set(0.5, 0.5);
     this.dropBloomSprite.visible = false;
 
-    this.dragMatSprite = new Sprite(Texture.EMPTY);
-    this.dragMatSprite.anchor.set(0.5, 0.5);
-    this.dragMatSprite.visible = false;
-
-    this.addChild(this.currentSprite, this.dropBloomSprite, this.dragMatSprite);
+    this.addChild(this.currentSprite, this.dropBloomSprite);
 
     this.initSurfaces(this.viewWidth, this.viewHeight);
     this.rebuildPatchTexture();
@@ -121,177 +113,110 @@ export class IconMatsOverlay extends Container {
     }
   }
 
-  private static iconKey(icon: AabbRect): string {
-    const clean = icon.label ? icon.label.trim().toLowerCase() : '';
-    return clean.length > 0 ? `lbl:${clean}` : `id:${icon.id}`;
+  private static isSamePosition(a: AabbRect, b: AabbRect): boolean {
+    return (
+      Math.abs(a.x - b.x) <= POSITION_MATCH_TOLERANCE_PX &&
+      Math.abs(a.y - b.y) <= POSITION_MATCH_TOLERANCE_PX
+    );
   }
 
-  private static areIconListsEquivalent(a: readonly AabbRect[], b: readonly AabbRect[]): boolean {
-    if (a.length !== b.length) {
-      return false;
-    }
-    for (let i = 0; i < a.length; i++) {
-      const ia = a[i];
-      const ib = b[i];
-      if (
-        IconMatsOverlay.iconKey(ia) !== IconMatsOverlay.iconKey(ib) ||
-        Math.abs(ia.x - ib.x) > 1 ||
-        Math.abs(ia.y - ib.y) > 1 ||
-        Math.abs(ia.width - ib.width) > 1 ||
-        Math.abs(ia.height - ib.height) > 1
-      ) {
-        return false;
+  /**
+   * Pure geometric comparison of icon sets so Windows Explorer SysListView32
+   * index shuffling never causes a stationary icon to be mistaken for a moved icon.
+   */
+  private static splitStationaryAndDropped(
+    previous: readonly AabbRect[],
+    incoming: readonly AabbRect[],
+  ): { stationary: AabbRect[]; dropped: AabbRect[] } {
+    const usedPrevIndices = new Set<number>();
+    const stationary: AabbRect[] = [];
+    const dropped: AabbRect[] = [];
+
+    for (const inc of incoming) {
+      let matchedPrevIdx = -1;
+      for (let i = 0; i < previous.length; i++) {
+        if (usedPrevIndices.has(i)) {
+          continue;
+        }
+        if (IconMatsOverlay.isSamePosition(inc, previous[i])) {
+          matchedPrevIdx = i;
+          break;
+        }
+      }
+
+      if (matchedPrevIdx >= 0) {
+        usedPrevIndices.add(matchedPrevIdx);
+        stationary.push(inc);
+      } else {
+        dropped.push(inc);
       }
     }
-    return true;
+
+    return { stationary, dropped };
   }
 
   setIcons(icons: readonly AabbRect[], options?: { fast?: boolean }): void {
-    const fast = options?.fast === true;
+    // Ignore drag-in-progress calls; we only update and fade-in when an icon is dropped
+    if (options?.fast === true) {
+      return;
+    }
+
     const incoming = icons.map((icon) => ({ ...icon }));
 
     if (incoming.length === 0) {
       this.icons = [];
       this.settledIcons = [];
-      this.activeDraggedKey = null;
-      this.wasDragging = false;
       this.stagedPixels = null;
-      this.dragMatSprite.visible = false;
       this.dropBloomSprite.visible = false;
       this.currentSprite.visible = false;
       return;
     }
 
-    if (fast) {
-      // Identify the single icon being dragged
-      let draggedIcon: AabbRect | null = null;
-      let maxMoveDist = 1.5;
-
-      const settledByKey = new Map<string, AabbRect>();
-      for (const s of this.settledIcons) {
-        settledByKey.set(IconMatsOverlay.iconKey(s), s);
-      }
-
-      if (this.activeDraggedKey) {
-        draggedIcon =
-          incoming.find((i) => IconMatsOverlay.iconKey(i) === this.activeDraggedKey) ?? null;
-      }
-
-      if (!draggedIcon) {
-        for (const inc of incoming) {
-          const prev = settledByKey.get(IconMatsOverlay.iconKey(inc));
-          if (prev) {
-            const d = Math.hypot(inc.x - prev.x, inc.y - prev.y);
-            if (d > maxMoveDist) {
-              maxMoveDist = d;
-              draggedIcon = inc;
-            }
-          }
-        }
-      }
-
-      if (draggedIcon) {
-        const draggedKey = IconMatsOverlay.iconKey(draggedIcon);
-        const firstDragFrame = !this.wasDragging || this.activeDraggedKey !== draggedKey;
-        this.wasDragging = true;
-        this.activeDraggedKey = draggedKey;
-
-        const cx = draggedIcon.x + draggedIcon.width * 0.5;
-        const cy = draggedIcon.y + draggedIcon.height * 0.5;
-        this.lastDraggedCenter = {
-          x: cx,
-          y: cy,
-          width: draggedIcon.width,
-          height: draggedIcon.height,
-        };
-
-        // Pure GPU translation for the dragged icon mat (<0.01ms CPU cost, 0 lag!)
-        this.dragMatSprite.position.set(cx, cy);
-        this.dragMatSprite.visible = true;
-        this.dropBloomSprite.visible = false;
-        this.dropBloomProgress = 1;
-        this.stagedPixels = null;
-        this.applyLightingTint();
-
-        // Only on frame 1 of drag: update the stationary background mat (excluding the dragged icon)
-        if (firstDragFrame) {
-          const stationaryIcons = incoming.filter(
-            (i) => IconMatsOverlay.iconKey(i) !== draggedKey,
-          );
-          this.dispatchRasterJob(stationaryIcons, false);
-        }
-
-        this.icons = incoming;
-        return;
-      }
-    }
-
-    // If we aren't finishing a drag and the icon coordinates haven't changed, do nothing!
-    if (!this.wasDragging && IconMatsOverlay.areIconListsEquivalent(incoming, this.settledIcons)) {
+    // Initial load when no previous icons existed
+    if (this.settledIcons.length === 0) {
+      this.icons = incoming;
+      this.settledIcons = incoming.map((icon) => ({ ...icon }));
+      this.dropBloomSprite.visible = false;
+      this.dropBloomProgress = 1;
+      this.dispatchRasterJob(incoming, false);
+      this.applyLightingTint();
       return;
     }
 
-    // Detect which single icon was just dropped or relocated
-    let droppedIcon: AabbRect | null = null;
-    if (this.wasDragging) {
-      if (this.activeDraggedKey) {
-        droppedIcon =
-          incoming.find((i) => IconMatsOverlay.iconKey(i) === this.activeDraggedKey) ?? null;
-      }
-      if (!droppedIcon && this.lastDraggedCenter) {
-        droppedIcon = {
-          id: -1,
-          label: 'dropped',
-          x: this.lastDraggedCenter.x - this.lastDraggedCenter.width * 0.5,
-          y: this.lastDraggedCenter.y - this.lastDraggedCenter.height * 0.5,
-          width: this.lastDraggedCenter.width,
-          height: this.lastDraggedCenter.height,
-        };
-      }
-    } else if (this.settledIcons.length > 0) {
-      const prevByKey = new Map<string, AabbRect>();
-      for (const s of this.settledIcons) {
-        prevByKey.set(IconMatsOverlay.iconKey(s), s);
-      }
-      for (const inc of incoming) {
-        const prev = prevByKey.get(IconMatsOverlay.iconKey(inc));
-        if (!prev || Math.hypot(inc.x - prev.x, inc.y - prev.y) > 10) {
-          droppedIcon = inc;
-          break;
-        }
-      }
-    }
+    const { stationary, dropped } = IconMatsOverlay.splitStationaryAndDropped(
+      this.settledIcons,
+      incoming,
+    );
 
-    const hadStationaryPreRendered = this.wasDragging;
-    this.wasDragging = false;
-    this.activeDraggedKey = null;
-    this.lastDraggedCenter = null;
-    this.dragMatSprite.visible = false;
+    // If no icon changed position and counts match, do nothing (zero refreshes!)
+    if (dropped.length === 0 && incoming.length === this.settledIcons.length) {
+      return;
+    }
 
     this.icons = incoming;
     this.settledIcons = incoming.map((icon) => ({ ...icon }));
 
-    if (droppedIcon) {
-      const dropKey = IconMatsOverlay.iconKey(droppedIcon);
-      const dropCx = droppedIcon.x + droppedIcon.width * 0.5;
-      const dropCy = droppedIcon.y + droppedIcon.height * 0.5;
-
-      // Ensure stationary icons (without the dropped icon) remain solid at 100% opacity on currentSprite
-      // while ONLY the dropped icon's mat (`dropBloomSprite`) fades & blooms in!
-      if (!hadStationaryPreRendered) {
-        const stationaryIcons = incoming.filter((i) => IconMatsOverlay.iconKey(i) !== dropKey);
-        this.dispatchRasterJob(stationaryIcons, false);
-      }
+    // Single icon (or small group) dropped at a new position:
+    // 1) Update `currentSprite` immediately with ONLY the stationary icons so the vacated
+    //    old spot disappears while all stationary icons stay at 100% steady opacity.
+    // 2) Fade in `dropBloomSprite` (`alpha: 0 -> 1`, `scale: 0.8 -> 1.0`) exclusively at
+    //    the dropped icon's new position.
+    // 3) Commit the full merged SDF (including the dropped icon) once the fade-in reaches 100%.
+    if (dropped.length === 1) {
+      const target = dropped[0];
+      const dropCx = target.x + target.width * 0.5;
+      const dropCy = target.y + target.height * 0.5;
 
       this.dropBloomSprite.position.set(dropCx, dropCy);
       this.dropBloomProgress = 0.01;
       this.dropBloomSprite.visible = true;
 
-      // Compute the final merged SDF (including the dropped icon) in the background worker,
-      // and hold committing it to currentSprite until dropBloomSprite finishes fading in to 100%!
+      // Render stationary icons immediately (no fade, keeps all un-dragged icons 100% solid)
+      this.dispatchRasterJob(stationary, false);
+      // Stage full icons (with the dropped icon merged in) to commit when dropBloomProgress === 1
       this.dispatchRasterJob(incoming, true);
     } else {
-      // Initial load or bulk tidy: render directly without per-icon drop bloom
+      // Bulk change (e.g. Tidy Icons grid reset): render settled layout directly
       this.dropBloomSprite.visible = false;
       this.dropBloomProgress = 1;
       this.dispatchRasterJob(incoming, false);
@@ -363,20 +288,15 @@ export class IconMatsOverlay extends Container {
     const baseTint = isNight ? matCfg.nightTint : 0xffffff;
     const baseAlpha = isNight ? matCfg.nightAlpha : 1;
 
-    // Stationary icons on currentSprite ALWAYS remain at 100% steady opacity (zero refresh/flicker!)
+    // Stationary icons on currentSprite ALWAYS remain at 100% steady opacity
     this.currentSprite.tint = baseTint;
     this.currentSprite.alpha = baseAlpha;
 
-    // Active dragged icon mat follows cursor at 94% opacity
-    this.dragMatSprite.tint = baseTint;
-    this.dragMatSprite.alpha = baseAlpha * 0.94;
-    this.dragMatSprite.scale.set(1.03, 1.03);
-
-    // ONLY the newly dropped icon mat (`dropBloomSprite`) animates alpha 0 -> 1 and scale 0.76 -> 1.0!
+    // ONLY the newly dropped icon mat (`dropBloomSprite`) animates alpha 0 -> 1 and scale 0.8 -> 1.0
     if (this.dropBloomSprite.visible) {
       const bt = Math.max(0, Math.min(1, this.dropBloomProgress));
       const eased = 1 - Math.pow(1 - bt, 3);
-      const scale = 0.76 + 0.24 * eased;
+      const scale = 0.8 + 0.2 * eased;
       this.dropBloomSprite.tint = baseTint;
       this.dropBloomSprite.scale.set(scale, scale);
       this.dropBloomSprite.alpha = baseAlpha * eased;
@@ -421,7 +341,7 @@ export class IconMatsOverlay extends Container {
 
     const singleIcon: AabbRect = {
       id: 0,
-      label: 'drag',
+      label: 'drop',
       x: (PATCH_CSS_SIZE - 76) * 0.5,
       y: (PATCH_CSS_SIZE - 88) * 0.5,
       width: 76,
@@ -443,9 +363,6 @@ export class IconMatsOverlay extends Container {
 
     if (!this.patchTexture) {
       this.patchTexture = Texture.from(this.patchCanvas, true);
-      this.dragMatSprite.texture = this.patchTexture;
-      this.dragMatSprite.width = PATCH_CSS_SIZE;
-      this.dragMatSprite.height = PATCH_CSS_SIZE;
       this.dropBloomSprite.texture = this.patchTexture;
       this.dropBloomSprite.width = PATCH_CSS_SIZE;
       this.dropBloomSprite.height = PATCH_CSS_SIZE;
@@ -548,9 +465,8 @@ export class IconMatsOverlay extends Container {
   ): void {
     this.latestAppliedJobId = jobId;
 
-    // If the single dropped icon is currently fading in on dropBloomSprite, hold the
-    // merged full-canvas commit until dropBloomProgress reaches 1.0 so ONLY the dropped
-    // icon fades in and stationary icons never change!
+    // Hold the final merged canvas commit until dropBloomSprite reaches 100% opacity
+    // so ONLY the dropped icon fades in and stationary icons never change!
     if (deferUntilDropBloomDone && this.dropBloomProgress < 1) {
       this.stagedPixels = { cw, ch, pixels, hasIcons };
       return;
