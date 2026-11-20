@@ -51,6 +51,9 @@ public sealed class SystemTrayContext : ApplicationContext
     private SettingsDialog? _openSettingsDialog;
     private TrayFlyoutForm? _flyoutForm;
     private long _lastFlyoutDeactivatedTicks;
+    private bool _wasLeftDown;
+    private bool _isDesktopLeftSession;
+    private int _rescanBusy;
     private bool _disposed;
 
     public SystemTrayContext(HostLaunchOptions options)
@@ -212,9 +215,25 @@ public sealed class SystemTrayContext : ApplicationContext
             {
                 RefreshFlyoutState();
             }
+
+            if (msg.Buttons.Left && !_wasLeftDown)
+            {
+                _isDesktopLeftSession = IsCursorOnDesktopWindow();
+            }
+            else if (!msg.Buttons.Left && _wasLeftDown)
+            {
+                bool endedDesktopDrag = _isDesktopLeftSession;
+                _isDesktopLeftSession = false;
+                if (endedDesktopDrag)
+                {
+                    _ = SchedulePostDropIconRescansAsync();
+                }
+            }
+            _wasLeftDown = msg.Buttons.Left;
+
             if (!_host.IsPaused)
             {
-                bool effectiveLeft = msg.Buttons.Left && IsDesktopOrHostForeground();
+                bool effectiveLeft = msg.Buttons.Left && _isDesktopLeftSession;
                 MouseRawMessage effectiveMsg = effectiveLeft == msg.Buttons.Left
                     ? msg
                     : msg with { Buttons = msg.Buttons with { Left = false } };
@@ -317,7 +336,12 @@ public sealed class SystemTrayContext : ApplicationContext
             return;
         }
 
-        RescanIcons(forceSend: false, sendSpawnAction: false);
+        // Skip SysListView32 polling while the user is holding the left mouse button down
+        // so we never contend with Explorer's OLE DoDragDrop loop during folder dragging.
+        if (!_wasLeftDown)
+        {
+            RescanIcons(forceSend: false, sendSpawnAction: false);
+        }
 
         _zOrderTickCounter++;
         if (_zOrderTickCounter >= 3)
@@ -334,54 +358,96 @@ public sealed class SystemTrayContext : ApplicationContext
             return;
         }
 
+        if (!forceSend && Interlocked.CompareExchange(ref _rescanBusy, 1, 0) != 0)
+        {
+            return;
+        }
+
         Rectangle monitorBounds = GetTargetMonitorBounds();
         double dpiScale = _host.IsHandleCreated ? SysListViewReader.GetMonitorDpiScale(_host.Handle) : 1.0;
-        IReadOnlyList<DesktopIconRect> scanned = _iconReader.ReadIcons(monitorBounds, dpiScale);
 
-        bool changed = forceSend
-            || Math.Abs(dpiScale - _latestDpiScale) > 0.001
-            || !IconsEqual(_latestIcons, scanned);
-
-        _latestIcons = scanned;
-        _latestDpiScale = dpiScale;
-
-        if (changed)
+        _ = Task.Run(() =>
         {
-            _ipc.Send(new IconUpdateMessage(
-                Timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                DpiScale: dpiScale,
-                Icons: scanned));
-        }
+            try
+            {
+                IReadOnlyList<DesktopIconRect> scanned = _iconReader.ReadIcons(monitorBounds, dpiScale);
+                if (_disposed)
+                {
+                    return;
+                }
 
-        if (sendSpawnAction)
-        {
-            _ipc.Send(new SpawnActionMessage(SpawnActions.RescanIcons));
-        }
+                InvokeOnUi(() =>
+                {
+                    if (_disposed)
+                    {
+                        return;
+                    }
+
+                    bool changed = forceSend
+                        || Math.Abs(dpiScale - _latestDpiScale) > 0.001
+                        || !IconsEqual(_latestIcons, scanned);
+
+                    _latestIcons = scanned;
+                    _latestDpiScale = dpiScale;
+
+                    if (changed)
+                    {
+                        _ipc.Send(new IconUpdateMessage(
+                            Timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            DpiScale: dpiScale,
+                            Icons: scanned));
+                    }
+
+                    if (sendSpawnAction)
+                    {
+                        _ipc.Send(new SpawnActionMessage(SpawnActions.RescanIcons));
+                    }
+                });
+            }
+            catch (Exception)
+            {
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _rescanBusy, 0);
+            }
+        });
     }
 
-    private bool IsDesktopOrHostForeground()
+    private bool IsCursorOnDesktopWindow()
     {
         if (_host.IsWindowedMode)
         {
             return true;
         }
 
-        IntPtr fg = Win32Api.GetForegroundWindow();
-        if (fg == IntPtr.Zero)
+        if (!Win32Api.GetCursorPos(out Win32Api.POINT pt))
         {
             return false;
         }
 
-        if (_host.IsHandleCreated && fg == _host.Handle)
+        IntPtr hWnd = Win32Api.WindowFromPoint(pt);
+        IntPtr current = hWnd;
+        for (int depth = 0; depth < 4 && current != IntPtr.Zero; depth++)
         {
-            return true;
+            if (_host.IsHandleCreated && current == _host.Handle)
+            {
+                return true;
+            }
+
+            string cls = Win32Api.ReadClassName(current);
+            if (string.Equals(cls, "SysListView32", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(cls, "SHELLDLL_DefView", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(cls, "WorkerW", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(cls, "Progman", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            current = Win32Api.GetParent(current);
         }
 
-        string cls = Win32Api.ReadClassName(fg);
-        return string.Equals(cls, "Progman", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(cls, "WorkerW", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(cls, "SHELLDLL_DefView", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(cls, "SysListView32", StringComparison.OrdinalIgnoreCase);
+        return false;
     }
 
     private async Task SchedulePostDropIconRescansAsync()
