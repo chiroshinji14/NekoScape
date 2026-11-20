@@ -23,6 +23,9 @@ public static class OcclusionEvaluator
         "Shell_SecondaryTrayWnd",
         "DV2ControlHost",
         "TopLevelWindowForOverflowXamlIsland",
+        "XamlExplorerHostIslandWindow",
+        "DesktopWindowXamlSource",
+        "ForegroundStaging",
         "Windows.UI.Core.CoreWindow"
     };
 

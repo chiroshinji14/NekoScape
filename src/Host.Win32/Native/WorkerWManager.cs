@@ -133,16 +133,22 @@ public sealed class WorkerWManager
             return false;
         }
 
-        Win32Api.SendMessageTimeout(
-            progman,
-            Win32Api.WM_SPAWN_WORKERW,
-            UIntPtr.Zero,
-            IntPtr.Zero,
-            Win32Api.SMTO_NORMAL,
-            1000,
-            out _);
-
+        // First check if a valid WorkerW target already exists without re-sending 0x052C
         WorkerWPlacementTarget target = ResolveLiveTarget(progman);
+
+        if (target.Mode == WorkerWPlacementMode.None)
+        {
+            Win32Api.SendMessageTimeout(
+                progman,
+                Win32Api.WM_SPAWN_WORKERW,
+                UIntPtr.Zero,
+                IntPtr.Zero,
+                Win32Api.SMTO_NORMAL,
+                1000,
+                out _);
+
+            target = ResolveLiveTarget(progman);
+        }
 
         // Retry with Win11 24H2+ raised-Progman WPARAM/LPARAM if initial 0x052C didn't create a target.
         if (target.Mode == WorkerWPlacementMode.None)
@@ -165,7 +171,7 @@ public sealed class WorkerWManager
 
         ApplyWallpaperWindowStyles(hostHandle);
         Win32Api.SetParent(hostHandle, target.ParentHandle);
-        PositionInParent(hostHandle, target, targetPhysicalBounds);
+        PositionInParent(hostHandle, target, targetPhysicalBounds, includeFrameChanged: true);
 
         _lastTarget = target;
         return true;
@@ -179,15 +185,19 @@ public sealed class WorkerWManager
         }
 
         WorkerWPlacementTarget? target = _lastTarget;
-        if (target is null || target.Mode == WorkerWPlacementMode.None || Win32Api.GetParent(hostHandle) != target.ParentHandle)
+        if (target is null || target.Mode == WorkerWPlacementMode.None || target.ParentHandle == IntPtr.Zero)
         {
             AttachToDesktop(hostHandle, targetPhysicalBounds);
             return;
         }
 
-        if (target.Mode == WorkerWPlacementMode.ProgmanChildBehindDefView)
+        // Only re-attach if the parent WorkerW/Progman window was destroyed (e.g. Explorer restarted).
+        // Never repeatedly call SetWindowPos with SWP_FRAMECHANGED or re-send 0x052C on a timer,
+        // as that causes DWM/Explorer to flash the desktop black.
+        IntPtr currentParent = Win32Api.GetParent(hostHandle);
+        if (currentParent != target.ParentHandle && !Win32Api.IsWindowVisible(target.ParentHandle))
         {
-            PositionInParent(hostHandle, target, targetPhysicalBounds);
+            AttachToDesktop(hostHandle, targetPhysicalBounds);
         }
     }
 
@@ -225,8 +235,8 @@ public sealed class WorkerWManager
     private static void ApplyWallpaperWindowStyles(IntPtr hostHandle)
     {
         long style = Win32Api.GetWindowLongPtr(hostHandle, Win32Api.GWL_STYLE).ToInt64();
-        style &= ~(Win32Api.WS_CAPTION | Win32Api.WS_THICKFRAME | Win32Api.WS_MINIMIZEBOX | Win32Api.WS_MAXIMIZEBOX | Win32Api.WS_SYSMENU);
-        style |= Win32Api.WS_POPUP | Win32Api.WS_VISIBLE;
+        style &= ~(Win32Api.WS_POPUP | Win32Api.WS_CAPTION | Win32Api.WS_THICKFRAME | Win32Api.WS_MINIMIZEBOX | Win32Api.WS_MAXIMIZEBOX | Win32Api.WS_SYSMENU);
+        style |= Win32Api.WS_CHILD | Win32Api.WS_VISIBLE;
         Win32Api.SetWindowLongPtr(hostHandle, Win32Api.GWL_STYLE, new IntPtr(style));
 
         long exStyle = Win32Api.GetWindowLongPtr(hostHandle, Win32Api.GWL_EXSTYLE).ToInt64();
@@ -235,10 +245,20 @@ public sealed class WorkerWManager
         Win32Api.SetWindowLongPtr(hostHandle, Win32Api.GWL_EXSTYLE, new IntPtr(exStyle));
     }
 
-    private static void PositionInParent(IntPtr hostHandle, WorkerWPlacementTarget target, Rectangle targetPhysicalBounds)
+    private static void PositionInParent(
+        IntPtr hostHandle,
+        WorkerWPlacementTarget target,
+        Rectangle targetPhysicalBounds,
+        bool includeFrameChanged = false)
     {
         Win32Api.POINT topLeft = new(targetPhysicalBounds.Left, targetPhysicalBounds.Top);
         Win32Api.ScreenToClient(target.ParentHandle, ref topLeft);
+
+        uint flags = Win32Api.SWP_NOACTIVATE | Win32Api.SWP_SHOWWINDOW;
+        if (includeFrameChanged)
+        {
+            flags |= Win32Api.SWP_FRAMECHANGED;
+        }
 
         Win32Api.SetWindowPos(
             hostHandle,
@@ -247,7 +267,7 @@ public sealed class WorkerWManager
             topLeft.Y,
             targetPhysicalBounds.Width,
             targetPhysicalBounds.Height,
-            Win32Api.SWP_NOACTIVATE | Win32Api.SWP_SHOWWINDOW | Win32Api.SWP_FRAMECHANGED);
+            flags);
     }
 
     private static WorkerWPlacementTarget ResolveLiveTarget(IntPtr progman)

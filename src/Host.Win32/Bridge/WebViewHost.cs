@@ -249,79 +249,55 @@ public sealed class WebViewHost : Form
 
     public async Task SetOccludedAsync(bool occluded)
     {
+        if (_isOccludedPaused == occluded)
+        {
+            return;
+        }
+
         _isOccludedPaused = occluded;
         await ApplyPowerStateAsync();
     }
 
     public async Task SetUserPausedAsync(bool paused)
     {
-        _isUserPaused = paused;
-        await ApplyPowerStateAsync();
-    }
-
-    private async Task ApplyPowerStateAsync()
-    {
-        if (!_isInitialized || _webView.CoreWebView2 is null || IsDisposed)
+        if (_isUserPaused == paused)
         {
             return;
         }
 
+        _isUserPaused = paused;
+        await ApplyPowerStateAsync();
+    }
+
+    private Task ApplyPowerStateAsync()
+    {
+        if (!_isInitialized || _webView.CoreWebView2 is null || IsDisposed)
+        {
+            return Task.CompletedTask;
+        }
+
         _suspendCts?.Cancel();
         _suspendCts?.Dispose();
-        _suspendCts = new CancellationTokenSource();
-        CancellationToken token = _suspendCts.Token;
+        _suspendCts = null;
 
         bool shouldPause = _isOccludedPaused || _isUserPaused;
         string reason = _isUserPaused
             ? PowerReasons.User
             : (_isOccludedPaused ? PowerReasons.Occluded : PowerReasons.Active);
 
-        if (!shouldPause)
+        // Keep WebView2 visible at all times so its DirectComposition surface never tears down
+        // or flashes black when windows are maximized/minimized. Pausing the PixiJS ticker via
+        // POWER_STATE IPC already drops CPU/GPU frame rendering to zero while holding the last frame.
+        try
         {
-            try
-            {
-                if (_webView.CoreWebView2.IsSuspended)
-                {
-                    _webView.CoreWebView2.Resume();
-                }
-            }
-            catch (Exception)
-            {
-            }
-
-            if (!_webView.Visible)
-            {
-                _webView.Visible = true;
-            }
-            _webView.CoreWebView2.IsMuted = false;
-            _ipc.Send(new PowerStateMessage(false, PowerReasons.Active));
-            return;
+            _webView.CoreWebView2.IsMuted = shouldPause;
+        }
+        catch (Exception)
+        {
         }
 
-        _ipc.Send(new PowerStateMessage(true, reason));
-
-        // Only hard-suspend when occluded (hidden behind fullscreen app) or non-windowed background.
-        if (_isOccludedPaused || !_isWindowedMode)
-        {
-            try
-            {
-                await Task.Delay(150, token);
-                if (token.IsCancellationRequested || IsDisposed || _webView.CoreWebView2 is null)
-                {
-                    return;
-                }
-
-                _webView.CoreWebView2.IsMuted = true;
-                _webView.Visible = false;
-                await _webView.CoreWebView2.TrySuspendAsync();
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (Exception)
-            {
-            }
-        }
+        _ipc.Send(new PowerStateMessage(shouldPause, reason));
+        return Task.CompletedTask;
     }
 
     private async Task InitializeWebViewAsync()
