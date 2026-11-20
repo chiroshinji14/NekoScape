@@ -62,8 +62,10 @@ export class IconMatsOverlay extends Container {
   private icons: AabbRect[] = [];
   private settledIcons: AabbRect[] = [];
 
-  // Per-icon GPU drop fade-in progress (1 = idle, 0..1 = single dropped icon fading in)
+  // Per-icon GPU drop grow/expand progress (1 = idle, 0..1 = single dropped icon expanding)
   private dropBloomProgress = 1;
+  private lastPatchIconWidth = 76;
+  private lastPatchIconHeight = 88;
 
   private theme: SceneTheme;
   private lightingMode: EffectiveLightingMode = 'golden';
@@ -196,16 +198,23 @@ export class IconMatsOverlay extends Container {
     this.icons = incoming;
     this.settledIcons = incoming.map((icon) => ({ ...icon }));
 
-    // Single icon (or small group) dropped at a new position:
+    // Single icon dropped at a new position:
     // 1) Update `currentSprite` immediately with ONLY the stationary icons so the vacated
     //    old spot disappears while all stationary icons stay at 100% steady opacity.
-    // 2) Fade in `dropBloomSprite` (`alpha: 0 -> 1`, `scale: 0.8 -> 1.0`) exclusively at
+    // 2) Grow/expand `dropBloomSprite` (`scale: 0.14 -> 1.0` * CANVAS_STEP) exclusively at
     //    the dropped icon's new position.
-    // 3) Commit the full merged SDF (including the dropped icon) once the fade-in reaches 100%.
+    // 3) Commit the full merged SDF (including the dropped icon) once the grow reaches 100%.
     if (dropped.length === 1) {
       const target = dropped[0];
       const dropCx = target.x + target.width * 0.5;
       const dropCy = target.y + target.height * 0.5;
+
+      if (
+        Math.abs(target.width - this.lastPatchIconWidth) > 1 ||
+        Math.abs(target.height - this.lastPatchIconHeight) > 1
+      ) {
+        this.rebuildPatchTexture(target.width, target.height);
+      }
 
       this.dropBloomSprite.position.set(dropCx, dropCy);
       this.dropBloomProgress = 0.01;
@@ -231,8 +240,8 @@ export class IconMatsOverlay extends Container {
     }
 
     const safeDt = Math.min(0.05, Math.max(0.001, dt));
-    // 360ms smooth fade-in exclusively on the dropped icon's mat (`dropBloomSprite`)
-    this.dropBloomProgress = Math.min(1, this.dropBloomProgress + safeDt * 2.8);
+    // ~290ms smooth grow/expand animation exclusively on the dropped icon's mat (`dropBloomSprite`)
+    this.dropBloomProgress = Math.min(1, this.dropBloomProgress + safeDt * 3.4);
     this.applyLightingTint();
 
     if (this.dropBloomProgress >= 1) {
@@ -250,7 +259,7 @@ export class IconMatsOverlay extends Container {
       return;
     }
     this.theme = theme;
-    this.rebuildPatchTexture();
+    this.rebuildPatchTexture(this.lastPatchIconWidth, this.lastPatchIconHeight);
     if (this.icons.length > 0) {
       this.dispatchRasterJob(this.icons, false);
     }
@@ -292,14 +301,16 @@ export class IconMatsOverlay extends Container {
     this.currentSprite.tint = baseTint;
     this.currentSprite.alpha = baseAlpha;
 
-    // ONLY the newly dropped icon mat (`dropBloomSprite`) animates alpha 0 -> 1 and scale 0.8 -> 1.0
+    // ONLY the newly dropped icon mat (`dropBloomSprite`) grows/expands from 0.14x -> 1.0x full size!
+    // Multiply by CANVAS_STEP (2) because patchCanvas is rendered at 1/2 resolution just like currentCanvas.
     if (this.dropBloomSprite.visible) {
       const bt = Math.max(0, Math.min(1, this.dropBloomProgress));
+      // Smooth cubic ease-out grow from center (0.14 -> 1.0)
       const eased = 1 - Math.pow(1 - bt, 3);
-      const scale = 0.8 + 0.2 * eased;
+      const growScale = (0.14 + 0.86 * eased) * CANVAS_STEP;
       this.dropBloomSprite.tint = baseTint;
-      this.dropBloomSprite.scale.set(scale, scale);
-      this.dropBloomSprite.alpha = baseAlpha * eased;
+      this.dropBloomSprite.scale.set(growScale, growScale);
+      this.dropBloomSprite.alpha = baseAlpha;
     }
   }
 
@@ -327,7 +338,12 @@ export class IconMatsOverlay extends Container {
     }
   }
 
-  private rebuildPatchTexture(): void {
+  private rebuildPatchTexture(iconWidth = 76, iconHeight = 88): void {
+    const safeW = Math.max(24, Math.min(PATCH_CSS_SIZE - 40, Math.round(iconWidth)));
+    const safeH = Math.max(24, Math.min(PATCH_CSS_SIZE - 40, Math.round(iconHeight)));
+    this.lastPatchIconWidth = safeW;
+    this.lastPatchIconHeight = safeH;
+
     if (!this.patchCanvas) {
       this.patchCanvas = document.createElement('canvas');
       this.patchCanvas.width = PATCH_CANVAS_SIZE;
@@ -342,10 +358,10 @@ export class IconMatsOverlay extends Container {
     const singleIcon: AabbRect = {
       id: 0,
       label: 'drop',
-      x: (PATCH_CSS_SIZE - 76) * 0.5,
-      y: (PATCH_CSS_SIZE - 88) * 0.5,
-      width: 76,
-      height: 88,
+      x: (PATCH_CSS_SIZE - safeW) * 0.5,
+      y: (PATCH_CSS_SIZE - safeH) * 0.5,
+      width: safeW,
+      height: safeH,
     };
 
     const { pixels } = rasterizeCrispIconMatsBuffer(
@@ -364,8 +380,7 @@ export class IconMatsOverlay extends Container {
     if (!this.patchTexture) {
       this.patchTexture = Texture.from(this.patchCanvas, true);
       this.dropBloomSprite.texture = this.patchTexture;
-      this.dropBloomSprite.width = PATCH_CSS_SIZE;
-      this.dropBloomSprite.height = PATCH_CSS_SIZE;
+      this.dropBloomSprite.scale.set(CANVAS_STEP, CANVAS_STEP);
     } else {
       this.patchTexture.source.update();
     }
