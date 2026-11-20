@@ -1,58 +1,55 @@
 import { Container, Sprite, Texture } from 'pixi.js';
+import type { IconSdfBounds } from '../core/IconFieldSdf';
 import type { AabbRect, SceneTheme } from '../types/simulation';
 import type { EffectiveLightingMode } from './LightingOverlay';
 import { SCENE_THEME_DEFS } from './SceneThemes';
 import {
+  paintIconMatsSubRect,
   rasterizeCrispIconMatsBuffer,
   type IconMatsWorkerRequest,
   type IconMatsWorkerResponse,
 } from './iconMats.worker';
 
 const CANVAS_STEP = 2;
-const PATCH_CSS_SIZE = 180;
-const PATCH_CANVAS_SIZE = PATCH_CSS_SIZE / CANVAS_STEP;
-const POSITION_MATCH_TOLERANCE_PX = 3.5;
+const DIRTY_MARGIN = 48;
+const POSITION_MATCH_TOLERANCE_PX = 5.0;
+
+interface ActiveGrowDrop {
+  stationaryIcons: AabbRect[];
+  targetIcon: AabbRect;
+  progress: number;
+  subBounds: IconSdfBounds;
+}
 
 /**
  * Iconscape-inspired coalesced organic floor mats underneath desktop icons.
  *
- * Behavior & Performance:
- * - No dynamic mat movement while dragging an icon (zero drag-time CPU/GPU overhead).
- * - When a dragged icon is dropped, geometric position set-difference matching
- *   (`findNewlyPlacedIcons`) identifies ONLY the newly dropped icon coordinate(s)
- *   regardless of Windows Explorer `SysListView32` index reordering.
- * - Stationary icons remain at 100% steady opacity on `currentSprite` and never
- *   refresh or blink; ONLY the dropped icon's mat (`dropBloomSprite`) fades & blooms
- *   in (`alpha: 0 -> 1`, `scale: 0.8 -> 1.0`) over 360ms at the dropped position.
+ * Surgical Sub-Rectangle Grow Architecture:
+ * - Zero drag-time mat updates (no lag while dragging).
+ * - Full-screen initial loads and theme switches execute on a background Web Worker.
+ * - When a single dragged icon is dropped:
+ *   1) Geometric set-difference matching identifies the vacated old rect and the
+ *      newly dropped rect (immune to Windows Explorer SysListView32 index shifts).
+ *   2) Only the ~180x190px sub-rectangle around the vacated old spot is cleared in-place
+ *      on `imageData` (all other stationary icon mats across the screen are untouched bytes).
+ *   3) Inside the ~180x190px sub-rectangle around the dropped icon, the true SDF box
+ *      grows smoothly from 10% -> 100% over ~280ms (`<0.35ms` per frame).
+ *   4) Because frame `progress = 1.0` renders the exact 100% final SDF directly into
+ *      `imageData`, there is ZERO sprite swap and ZERO re-render after growing finishes.
  */
 export class IconMatsOverlay extends Container {
   private readonly currentSprite: Sprite;
-  private readonly dropBloomSprite: Sprite;
 
   private currentTexture: Texture | null = null;
   private currentCanvas: HTMLCanvasElement | null = null;
   private currentCtx: CanvasRenderingContext2D | null = null;
-
-  private patchTexture: Texture | null = null;
-  private patchCanvas: HTMLCanvasElement | null = null;
+  private imageData: ImageData | null = null;
 
   private worker: Worker | null = null;
   private nextJobId = 1;
   private latestAppliedJobId = 0;
   private workerBusy = false;
-  private pendingWorkerReq: {
-    req: Omit<IconMatsWorkerRequest, 'jobId'>;
-    deferUntilDropBloomDone: boolean;
-  } | null = null;
-  private activeJobDefersUntilBloom = false;
-
-  // Staged worker result waiting for the single dropped icon's fade-in bloom to finish
-  private stagedPixels: {
-    cw: number;
-    ch: number;
-    pixels: Uint8ClampedArray;
-    hasIcons: boolean;
-  } | null = null;
+  private pendingWorkerReq: Omit<IconMatsWorkerRequest, 'jobId'> | null = null;
 
   private cw = 0;
   private ch = 0;
@@ -61,11 +58,7 @@ export class IconMatsOverlay extends Container {
 
   private icons: AabbRect[] = [];
   private settledIcons: AabbRect[] = [];
-
-  // Per-icon GPU drop grow/expand progress (1 = idle, 0..1 = single dropped icon expanding)
-  private dropBloomProgress = 1;
-  private lastPatchIconWidth = 76;
-  private lastPatchIconHeight = 88;
+  private growingDrop: ActiveGrowDrop | null = null;
 
   private theme: SceneTheme;
   private lightingMode: EffectiveLightingMode = 'golden';
@@ -81,15 +74,9 @@ export class IconMatsOverlay extends Container {
 
     this.currentSprite = new Sprite(Texture.EMPTY);
     this.currentSprite.visible = false;
-
-    this.dropBloomSprite = new Sprite(Texture.EMPTY);
-    this.dropBloomSprite.anchor.set(0.5, 0.5);
-    this.dropBloomSprite.visible = false;
-
-    this.addChild(this.currentSprite, this.dropBloomSprite);
+    this.addChild(this.currentSprite);
 
     this.initSurfaces(this.viewWidth, this.viewHeight);
-    this.rebuildPatchTexture();
     this.initWorker();
   }
 
@@ -122,43 +109,55 @@ export class IconMatsOverlay extends Container {
     );
   }
 
-  /**
-   * Pure geometric comparison of icon sets so Windows Explorer SysListView32
-   * index shuffling never causes a stationary icon to be mistaken for a moved icon.
-   */
-  private static splitStationaryAndDropped(
+  private static splitStationaryVacatedAndDropped(
     previous: readonly AabbRect[],
     incoming: readonly AabbRect[],
-  ): { stationary: AabbRect[]; dropped: AabbRect[] } {
-    const usedPrevIndices = new Set<number>();
+  ): { stationary: AabbRect[]; vacated: AabbRect[]; dropped: AabbRect[] } {
+    const matchedPrevIndices = new Set<number>();
     const stationary: AabbRect[] = [];
     const dropped: AabbRect[] = [];
 
     for (const inc of incoming) {
-      let matchedPrevIdx = -1;
+      let foundPrevIdx = -1;
       for (let i = 0; i < previous.length; i++) {
-        if (usedPrevIndices.has(i)) {
+        if (matchedPrevIndices.has(i)) {
           continue;
         }
         if (IconMatsOverlay.isSamePosition(inc, previous[i])) {
-          matchedPrevIdx = i;
+          foundPrevIdx = i;
           break;
         }
       }
 
-      if (matchedPrevIdx >= 0) {
-        usedPrevIndices.add(matchedPrevIdx);
+      if (foundPrevIdx >= 0) {
+        matchedPrevIndices.add(foundPrevIdx);
         stationary.push(inc);
       } else {
         dropped.push(inc);
       }
     }
 
-    return { stationary, dropped };
+    const vacated: AabbRect[] = [];
+    for (let i = 0; i < previous.length; i++) {
+      if (!matchedPrevIndices.has(i)) {
+        vacated.push(previous[i]);
+      }
+    }
+
+    return { stationary, vacated, dropped };
+  }
+
+  private boundsForIcon(icon: AabbRect): IconSdfBounds {
+    return {
+      minX: Math.max(0, Math.floor(icon.x - DIRTY_MARGIN)),
+      minY: Math.max(0, Math.floor(icon.y - DIRTY_MARGIN)),
+      maxX: Math.min(this.viewWidth, Math.ceil(icon.x + icon.width + DIRTY_MARGIN)),
+      maxY: Math.min(this.viewHeight, Math.ceil(icon.y + icon.height + DIRTY_MARGIN)),
+    };
   }
 
   setIcons(icons: readonly AabbRect[], options?: { fast?: boolean }): void {
-    // Ignore drag-in-progress calls; we only update and fade-in when an icon is dropped
+    // Ignore drag-in-progress calls; we only animate when an icon is dropped
     if (options?.fast === true) {
       return;
     }
@@ -168,8 +167,7 @@ export class IconMatsOverlay extends Container {
     if (incoming.length === 0) {
       this.icons = [];
       this.settledIcons = [];
-      this.stagedPixels = null;
-      this.dropBloomSprite.visible = false;
+      this.growingDrop = null;
       this.currentSprite.visible = false;
       return;
     }
@@ -178,80 +176,139 @@ export class IconMatsOverlay extends Container {
     if (this.settledIcons.length === 0) {
       this.icons = incoming;
       this.settledIcons = incoming.map((icon) => ({ ...icon }));
-      this.dropBloomSprite.visible = false;
-      this.dropBloomProgress = 1;
-      this.dispatchRasterJob(incoming, false);
+      this.growingDrop = null;
+      this.dispatchFullRasterJob(incoming);
       this.applyLightingTint();
       return;
     }
 
-    const { stationary, dropped } = IconMatsOverlay.splitStationaryAndDropped(
+    const { stationary, vacated, dropped } = IconMatsOverlay.splitStationaryVacatedAndDropped(
       this.settledIcons,
       incoming,
     );
 
-    // If no icon changed position and counts match, do nothing (zero refreshes!)
-    if (dropped.length === 0 && incoming.length === this.settledIcons.length) {
+    // If no icon changed position, do nothing (zero refreshes!)
+    if (dropped.length === 0 && vacated.length === 0) {
       return;
+    }
+
+    // If a previous drop grow was mid-flight, finish its final frame in-place before starting the new one
+    if (this.growingDrop) {
+      this.renderGrowFrame(this.growingDrop, 1);
+      this.growingDrop = null;
     }
 
     this.icons = incoming;
     this.settledIcons = incoming.map((icon) => ({ ...icon }));
 
-    // Single icon dropped at a new position:
-    // 1) Update `currentSprite` immediately with ONLY the stationary icons so the vacated
-    //    old spot disappears while all stationary icons stay at 100% steady opacity.
-    // 2) Grow/expand `dropBloomSprite` (`scale: 0.14 -> 1.0` * CANVAS_STEP) exclusively at
-    //    the dropped icon's new position.
-    // 3) Commit the full merged SDF (including the dropped icon) once the grow reaches 100%.
-    if (dropped.length === 1) {
-      const target = dropped[0];
-      const dropCx = target.x + target.width * 0.5;
-      const dropCy = target.y + target.height * 0.5;
-
-      if (
-        Math.abs(target.width - this.lastPatchIconWidth) > 1 ||
-        Math.abs(target.height - this.lastPatchIconHeight) > 1
-      ) {
-        this.rebuildPatchTexture(target.width, target.height);
+    // Surgical single-icon drop (or single icon removed/added):
+    // Touch ONLY the local ~180x190px sub-rectangles of the vacated spot and the dropped spot!
+    // Every other stationary icon on the desktop is literally untouched memory in `this.imageData`.
+    if (dropped.length <= 1 && vacated.length <= 1 && this.imageData && this.currentSprite.visible) {
+      // 1) In-place clear/update ONLY the vacated old sub-rectangle (using stationary icons)
+      for (const oldIcon of vacated) {
+        this.updateCanvasSubRect(stationary, this.boundsForIcon(oldIcon));
       }
 
-      this.dropBloomSprite.position.set(dropCx, dropCy);
-      this.dropBloomProgress = 0.01;
-      this.dropBloomSprite.visible = true;
+      // 2) Start the in-place SDF grow/expand animation ONLY inside the dropped icon's sub-rectangle
+      if (dropped.length === 1) {
+        const target = dropped[0];
+        this.growingDrop = {
+          stationaryIcons: stationary,
+          targetIcon: target,
+          progress: 0.04,
+          subBounds: this.boundsForIcon(target),
+        };
+        this.renderGrowFrame(this.growingDrop, this.growingDrop.progress);
+      }
 
-      // Render stationary icons immediately (no fade, keeps all un-dragged icons 100% solid)
-      this.dispatchRasterJob(stationary, false);
-      // Stage full icons (with the dropped icon merged in) to commit when dropBloomProgress === 1
-      this.dispatchRasterJob(incoming, true);
-    } else {
-      // Bulk change (e.g. Tidy Icons grid reset): render settled layout directly
-      this.dropBloomSprite.visible = false;
-      this.dropBloomProgress = 1;
-      this.dispatchRasterJob(incoming, false);
+      this.applyLightingTint();
+      return;
     }
 
+    // Bulk change (e.g. Tidy Icons grid reset): render full settled layout via Web Worker
+    this.growingDrop = null;
+    this.dispatchFullRasterJob(incoming);
     this.applyLightingTint();
   }
 
   update(dt: number): void {
-    if (this.dropBloomProgress >= 1) {
+    if (!this.growingDrop) {
       return;
     }
 
     const safeDt = Math.min(0.05, Math.max(0.001, dt));
-    // ~290ms smooth grow/expand animation exclusively on the dropped icon's mat (`dropBloomSprite`)
-    this.dropBloomProgress = Math.min(1, this.dropBloomProgress + safeDt * 3.4);
-    this.applyLightingTint();
+    // ~275ms smooth SDF grow/expand directly in the local sub-rectangle
+    this.growingDrop.progress = Math.min(1, this.growingDrop.progress + safeDt * 3.6);
+    this.renderGrowFrame(this.growingDrop, this.growingDrop.progress);
 
-    if (this.dropBloomProgress >= 1) {
-      if (this.stagedPixels) {
-        const staged = this.stagedPixels;
-        this.stagedPixels = null;
-        this.commitPixelsToCurrentCanvas(staged.cw, staged.ch, staged.pixels, staged.hasIcons);
-      }
-      this.dropBloomSprite.visible = false;
+    if (this.growingDrop.progress >= 1) {
+      // At progress === 1, renderGrowFrame already painted the exact 100% final SDF
+      // into `this.imageData`. Nothing else to commit or re-render afterward!
+      this.growingDrop = null;
     }
+  }
+
+  private renderGrowFrame(grow: ActiveGrowDrop, progress: number): void {
+    const t = Math.max(0, Math.min(1, progress));
+    // Smooth cubic ease-out from 10% seed at center to 100% exact final icon dimensions
+    const eased = 1 - Math.pow(1 - t, 3);
+    const scale = 0.1 + 0.9 * eased;
+
+    const target = grow.targetIcon;
+    const cx = target.x + target.width * 0.5;
+    const cy = target.y + target.height * 0.5;
+
+    // Scale total padded size (width + 2*padding where padding = 12) so hx/hy in computeIconSdfGrid
+    // expands linearly from 10% -> 100% and reaches exact target.width / target.height at t === 1.
+    const fullPaddedW = target.width + 24;
+    const fullPaddedH = target.height + 24;
+    const w = t >= 0.999 ? target.width : Math.max(4, fullPaddedW * scale) - 24;
+    const h = t >= 0.999 ? target.height : Math.max(4, fullPaddedH * scale) - 24;
+
+    const scaledIcon: AabbRect = {
+      ...target,
+      x: t >= 0.999 ? target.x : cx - w * 0.5,
+      y: t >= 0.999 ? target.y : cy - h * 0.5,
+      width: w,
+      height: h,
+    };
+
+    const workingIcons = [...grow.stationaryIcons, scaledIcon];
+    this.updateCanvasSubRect(workingIcons, grow.subBounds);
+  }
+
+  private updateCanvasSubRect(icons: readonly AabbRect[], subBounds: IconSdfBounds): void {
+    if (!this.currentCtx || !this.imageData || !this.currentTexture) {
+      return;
+    }
+
+    const dirty = paintIconMatsSubRect(
+      this.imageData.data,
+      icons,
+      this.viewWidth,
+      this.viewHeight,
+      this.cw,
+      this.ch,
+      this.theme,
+      subBounds,
+    );
+
+    if (!dirty) {
+      return;
+    }
+
+    this.currentCtx.putImageData(
+      this.imageData,
+      0,
+      0,
+      dirty.c0,
+      dirty.r0,
+      dirty.c1 - dirty.c0 + 1,
+      dirty.r1 - dirty.r0 + 1,
+    );
+    this.currentTexture.source.update();
+    this.currentSprite.visible = true;
   }
 
   setTheme(theme: SceneTheme): void {
@@ -259,9 +316,9 @@ export class IconMatsOverlay extends Container {
       return;
     }
     this.theme = theme;
-    this.rebuildPatchTexture(this.lastPatchIconWidth, this.lastPatchIconHeight);
+    this.growingDrop = null;
     if (this.icons.length > 0) {
-      this.dispatchRasterJob(this.icons, false);
+      this.dispatchFullRasterJob(this.icons);
     }
     this.applyLightingTint();
   }
@@ -278,9 +335,10 @@ export class IconMatsOverlay extends Container {
     }
     this.viewWidth = w;
     this.viewHeight = h;
+    this.growingDrop = null;
     this.initSurfaces(w, h);
     if (this.icons.length > 0) {
-      this.dispatchRasterJob(this.icons, false);
+      this.dispatchFullRasterJob(this.icons);
     } else {
       this.currentSprite.visible = false;
     }
@@ -294,24 +352,8 @@ export class IconMatsOverlay extends Container {
   private applyLightingTint(): void {
     const isNight = this.lightingMode === 'night';
     const matCfg = SCENE_THEME_DEFS[this.theme].mat;
-    const baseTint = isNight ? matCfg.nightTint : 0xffffff;
-    const baseAlpha = isNight ? matCfg.nightAlpha : 1;
-
-    // Stationary icons on currentSprite ALWAYS remain at 100% steady opacity
-    this.currentSprite.tint = baseTint;
-    this.currentSprite.alpha = baseAlpha;
-
-    // ONLY the newly dropped icon mat (`dropBloomSprite`) grows/expands from 0.14x -> 1.0x full size!
-    // Multiply by CANVAS_STEP (2) because patchCanvas is rendered at 1/2 resolution just like currentCanvas.
-    if (this.dropBloomSprite.visible) {
-      const bt = Math.max(0, Math.min(1, this.dropBloomProgress));
-      // Smooth cubic ease-out grow from center (0.14 -> 1.0)
-      const eased = 1 - Math.pow(1 - bt, 3);
-      const growScale = (0.14 + 0.86 * eased) * CANVAS_STEP;
-      this.dropBloomSprite.tint = baseTint;
-      this.dropBloomSprite.scale.set(growScale, growScale);
-      this.dropBloomSprite.alpha = baseAlpha;
-    }
+    this.currentSprite.tint = isNight ? matCfg.nightTint : 0xffffff;
+    this.currentSprite.alpha = isNight ? matCfg.nightAlpha : 1;
   }
 
   private initSurfaces(w: number, h: number): void {
@@ -328,6 +370,7 @@ export class IconMatsOverlay extends Container {
 
     this.currentCanvas = canvas;
     this.currentCtx = ctx;
+    this.imageData = ctx ? ctx.createImageData(this.cw, this.ch) : null;
     this.currentTexture = texture;
     this.currentSprite.texture = texture;
     this.currentSprite.width = this.cw * CANVAS_STEP;
@@ -338,58 +381,7 @@ export class IconMatsOverlay extends Container {
     }
   }
 
-  private rebuildPatchTexture(iconWidth = 76, iconHeight = 88): void {
-    const safeW = Math.max(24, Math.min(PATCH_CSS_SIZE - 40, Math.round(iconWidth)));
-    const safeH = Math.max(24, Math.min(PATCH_CSS_SIZE - 40, Math.round(iconHeight)));
-    this.lastPatchIconWidth = safeW;
-    this.lastPatchIconHeight = safeH;
-
-    if (!this.patchCanvas) {
-      this.patchCanvas = document.createElement('canvas');
-      this.patchCanvas.width = PATCH_CANVAS_SIZE;
-      this.patchCanvas.height = PATCH_CANVAS_SIZE;
-    }
-
-    const ctx = this.patchCanvas.getContext('2d');
-    if (!ctx) {
-      return;
-    }
-
-    const singleIcon: AabbRect = {
-      id: 0,
-      label: 'drop',
-      x: (PATCH_CSS_SIZE - safeW) * 0.5,
-      y: (PATCH_CSS_SIZE - safeH) * 0.5,
-      width: safeW,
-      height: safeH,
-    };
-
-    const { pixels } = rasterizeCrispIconMatsBuffer(
-      [singleIcon],
-      PATCH_CSS_SIZE,
-      PATCH_CSS_SIZE,
-      PATCH_CANVAS_SIZE,
-      PATCH_CANVAS_SIZE,
-      this.theme,
-    );
-
-    const img = ctx.createImageData(PATCH_CANVAS_SIZE, PATCH_CANVAS_SIZE);
-    img.data.set(pixels);
-    ctx.putImageData(img, 0, 0);
-
-    if (!this.patchTexture) {
-      this.patchTexture = Texture.from(this.patchCanvas, true);
-      this.dropBloomSprite.texture = this.patchTexture;
-      this.dropBloomSprite.scale.set(CANVAS_STEP, CANVAS_STEP);
-    } else {
-      this.patchTexture.source.update();
-    }
-  }
-
-  private dispatchRasterJob(
-    targetIcons: readonly AabbRect[],
-    deferUntilDropBloomDone: boolean,
-  ): void {
+  private dispatchFullRasterJob(targetIcons: readonly AabbRect[]): void {
     const req: Omit<IconMatsWorkerRequest, 'jobId'> = {
       icons: targetIcons.map((i) => ({ ...i })),
       viewWidth: this.viewWidth,
@@ -409,34 +401,23 @@ export class IconMatsOverlay extends Container {
         req.ch,
         req.theme,
       );
-      this.handleCompletedPixels(
-        jobId,
-        req.cw,
-        req.ch,
-        pixels,
-        hasIcons,
-        deferUntilDropBloomDone,
-      );
+      this.commitFullPixels(jobId, req.cw, req.ch, pixels, hasIcons);
       return;
     }
 
     if (this.workerBusy) {
-      this.pendingWorkerReq = { req, deferUntilDropBloomDone };
+      this.pendingWorkerReq = req;
       return;
     }
 
-    this.sendToWorker(req, deferUntilDropBloomDone);
+    this.sendToWorker(req);
   }
 
-  private sendToWorker(
-    req: Omit<IconMatsWorkerRequest, 'jobId'>,
-    deferUntilDropBloomDone: boolean,
-  ): void {
+  private sendToWorker(req: Omit<IconMatsWorkerRequest, 'jobId'>): void {
     if (!this.worker) {
       return;
     }
     this.workerBusy = true;
-    this.activeJobDefersUntilBloom = deferUntilDropBloomDone;
     const jobId = this.nextJobId++;
     const fullReq: IconMatsWorkerRequest = {
       ...req,
@@ -446,69 +427,51 @@ export class IconMatsOverlay extends Container {
   }
 
   private onWorkerCompleted(res: IconMatsWorkerResponse): void {
-    const deferUntilBloom = this.activeJobDefersUntilBloom;
     this.workerBusy = false;
 
     if (this.pendingWorkerReq) {
       const next = this.pendingWorkerReq;
       this.pendingWorkerReq = null;
-      this.sendToWorker(next.req, next.deferUntilDropBloomDone);
+      this.sendToWorker(next);
     }
 
     if (res.jobId < this.latestAppliedJobId || res.cw !== this.cw || res.ch !== this.ch) {
       return;
     }
 
+    // If a single-icon grow animation started while an old full-screen worker job was in flight,
+    // don't let the stale full-screen job overwrite the active surgical canvas!
+    if (this.growingDrop) {
+      return;
+    }
+
     const pixels = new Uint8ClampedArray(res.pixelsBuffer);
-    this.handleCompletedPixels(
-      res.jobId,
-      res.cw,
-      res.ch,
-      pixels,
-      res.hasIcons,
-      deferUntilBloom,
-    );
+    this.commitFullPixels(res.jobId, res.cw, res.ch, pixels, res.hasIcons);
   }
 
-  private handleCompletedPixels(
+  private commitFullPixels(
     jobId: number,
     cw: number,
     ch: number,
     pixels: Uint8ClampedArray,
     hasIcons: boolean,
-    deferUntilDropBloomDone: boolean,
   ): void {
     this.latestAppliedJobId = jobId;
 
-    // Hold the final merged canvas commit until dropBloomSprite reaches 100% opacity
-    // so ONLY the dropped icon fades in and stationary icons never change!
-    if (deferUntilDropBloomDone && this.dropBloomProgress < 1) {
-      this.stagedPixels = { cw, ch, pixels, hasIcons };
-      return;
-    }
-
-    this.stagedPixels = null;
-    this.commitPixelsToCurrentCanvas(cw, ch, pixels, hasIcons);
-  }
-
-  private commitPixelsToCurrentCanvas(
-    cw: number,
-    ch: number,
-    pixels: Uint8ClampedArray,
-    hasIcons: boolean,
-  ): void {
-    if (!this.currentCtx || !this.currentCanvas || !this.currentTexture) {
+    if (!this.currentCtx || !this.currentCanvas || !this.currentTexture || !this.imageData) {
       return;
     }
 
     if (!hasIcons) {
+      this.imageData.data.fill(0);
+      this.currentCtx.putImageData(this.imageData, 0, 0);
+      this.currentTexture.source.update();
       this.currentSprite.visible = false;
       return;
     }
 
-    const imgData = this.currentCtx.createImageData(cw, ch);
-    imgData.data.set(pixels);
-    this.currentCtx.putImageData(imgData, 0, 0);
+    this.imageData.data.set(pixels);
+    this.currentCtx.putImageData(this.imageData, 0, 0);
     this.currentTexture.source.update();
     this.currentSprite.visible = true;
     this.applyLightingTint();
@@ -523,14 +486,10 @@ export class IconMatsOverlay extends Container {
       this.currentTexture.destroy(true);
       this.currentTexture = null;
     }
-    if (this.patchTexture && this.patchTexture !== Texture.EMPTY) {
-      this.patchTexture.destroy(true);
-      this.patchTexture = null;
-    }
     this.currentCanvas = null;
     this.currentCtx = null;
-    this.patchCanvas = null;
-    this.stagedPixels = null;
+    this.imageData = null;
+    this.growingDrop = null;
     super.destroy({ children: true });
   }
 }

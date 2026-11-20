@@ -46,42 +46,46 @@ function smoothCellNoise(cx: number, cy: number, cellSize: number): number {
   return top + (bot - top) * v;
 }
 
-export function rasterizeCrispIconMatsBuffer(
+export function paintIconMatsSubRect(
+  pixels: Uint8ClampedArray,
   icons: readonly AabbRect[],
   viewWidth: number,
   viewHeight: number,
   cw: number,
   ch: number,
   theme: SceneTheme,
-): { pixels: Uint8ClampedArray; hasIcons: boolean } {
-  const pixels = new Uint8ClampedArray(cw * ch * 4);
+  subBounds: IconSdfBounds,
+): { c0: number; c1: number; r0: number; r1: number } | null {
+  const minX = Math.max(0, Math.floor(subBounds.minX));
+  const minY = Math.max(0, Math.floor(subBounds.minY));
+  const maxX = Math.min(viewWidth, Math.ceil(subBounds.maxX));
+  const maxY = Math.min(viewHeight, Math.ceil(subBounds.maxY));
+
+  if (minX >= maxX || minY >= maxY) {
+    return null;
+  }
+
+  const nc0 = Math.max(0, Math.floor(minX / CANVAS_STEP));
+  const nc1 = Math.min(cw - 1, Math.floor(maxX / CANVAS_STEP));
+  const nr0 = Math.max(0, Math.floor(minY / CANVAS_STEP));
+  const nr1 = Math.min(ch - 1, Math.floor(maxY / CANVAS_STEP));
+
+  if (nc0 > nc1 || nr0 > nr1) {
+    return null;
+  }
+
+  // Clear only the sub-rectangle rows in-place (leaving all other icon mats on the canvas 100% untouched)
+  const rowByteLen = (nc1 - nc0 + 1) * 4;
+  for (let cy = nr0; cy <= nr1; cy++) {
+    const rowStart = (cy * cw + nc0) * 4;
+    pixels.fill(0, rowStart, rowStart + rowByteLen);
+  }
+
   if (icons.length === 0) {
-    return { pixels, hasIcons: false };
+    return { c0: nc0, c1: nc1, r0: nr0, r1: nr1 };
   }
 
-  let minX = viewWidth;
-  let minY = viewHeight;
-  let maxX = 0;
-  let maxY = 0;
-  for (let i = 0; i < icons.length; i++) {
-    const icon = icons[i];
-    if (icon.x < minX) minX = icon.x;
-    if (icon.y < minY) minY = icon.y;
-    if (icon.x + icon.width > maxX) maxX = icon.x + icon.width;
-    if (icon.y + icon.height > maxY) maxY = icon.y + icon.height;
-  }
-
-  const newBounds: IconSdfBounds = {
-    minX: Math.max(0, Math.floor(minX - DIRTY_MARGIN)),
-    minY: Math.max(0, Math.floor(minY - DIRTY_MARGIN)),
-    maxX: Math.min(viewWidth, Math.ceil(maxX + DIRTY_MARGIN)),
-    maxY: Math.min(viewHeight, Math.ceil(maxY + DIRTY_MARGIN)),
-  };
-
-  if (newBounds.minX >= newBounds.maxX || newBounds.minY >= newBounds.maxY) {
-    return { pixels, hasIcons: false };
-  }
-
+  const clampedBounds: IconSdfBounds = { minX, minY, maxX, maxY };
   const sdfGrid = computeIconSdfGrid(icons, viewWidth, viewHeight, {
     step: 4,
     blendK: 30,
@@ -89,13 +93,8 @@ export function rasterizeCrispIconMatsBuffer(
     roundness: 0.45,
     warpAmp: 4,
     seed: 17,
-    bounds: newBounds,
+    bounds: clampedBounds,
   });
-
-  const nc0 = Math.max(0, Math.floor(newBounds.minX / CANVAS_STEP));
-  const nc1 = Math.min(cw - 1, Math.floor(newBounds.maxX / CANVAS_STEP));
-  const nr0 = Math.max(0, Math.floor(newBounds.minY / CANVAS_STEP));
-  const nr1 = Math.min(ch - 1, Math.floor(newBounds.maxY / CANVAS_STEP));
 
   const matCfg = SCENE_THEME_DEFS[theme].mat;
   const { r: cr, g: cg, b: cb } = matCfg.centerRgb;
@@ -311,7 +310,52 @@ export function rasterizeCrispIconMatsBuffer(
     }
   }
 
-  return { pixels, hasIcons: true };
+  return { c0: nc0, c1: nc1, r0: nr0, r1: nr1 };
+}
+
+export function rasterizeCrispIconMatsBuffer(
+  icons: readonly AabbRect[],
+  viewWidth: number,
+  viewHeight: number,
+  cw: number,
+  ch: number,
+  theme: SceneTheme,
+): { pixels: Uint8ClampedArray; hasIcons: boolean } {
+  const pixels = new Uint8ClampedArray(cw * ch * 4);
+  if (icons.length === 0) {
+    return { pixels, hasIcons: false };
+  }
+
+  let minX = viewWidth;
+  let minY = viewHeight;
+  let maxX = 0;
+  let maxY = 0;
+  for (let i = 0; i < icons.length; i++) {
+    const icon = icons[i];
+    if (icon.x < minX) minX = icon.x;
+    if (icon.y < minY) minY = icon.y;
+    if (icon.x + icon.width > maxX) maxX = icon.x + icon.width;
+    if (icon.y + icon.height > maxY) maxY = icon.y + icon.height;
+  }
+
+  const newBounds: IconSdfBounds = {
+    minX: Math.max(0, Math.floor(minX - DIRTY_MARGIN)),
+    minY: Math.max(0, Math.floor(minY - DIRTY_MARGIN)),
+    maxX: Math.min(viewWidth, Math.ceil(maxX + DIRTY_MARGIN)),
+    maxY: Math.min(viewHeight, Math.ceil(maxY + DIRTY_MARGIN)),
+  };
+
+  const painted = paintIconMatsSubRect(
+    pixels,
+    icons,
+    viewWidth,
+    viewHeight,
+    cw,
+    ch,
+    theme,
+    newBounds,
+  );
+  return { pixels, hasIcons: painted !== null };
 }
 
 if (typeof self !== 'undefined' && typeof self.addEventListener === 'function') {
